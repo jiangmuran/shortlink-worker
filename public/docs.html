@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>API 文档 · ShortLink</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    .docs { max-width: 860px; margin: 0 auto; padding: 36px 22px 90px; }
+    .docs-head { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+    .docs-head h1 { font-size: 26px; letter-spacing: -0.03em; }
+    .docs .back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; margin-bottom: 10px; }
+    .docs .back:hover { color: var(--accent); }
+    h3.m { font-size: 19px; margin: 34px 0 10px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; }
+    h3.m::before { content: ''; width: 4px; height: 18px; border-radius: 2px; background: var(--accent); }
+    p.lead { color: var(--text-2); font-size: 15px; }
+    .ep { border: 1px solid var(--hairline); border-radius: 14px; background: var(--card); box-shadow: var(--shadow-1); padding: 16px 18px; margin: 12px 0; }
+    .ep .line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .method { font-family: var(--mono); font-size: 12px; font-weight: 700; border-radius: 6px; padding: 3px 8px; }
+    .method.get { background: var(--accent-soft); color: var(--accent); }
+    .method.post { background: var(--green-soft); color: var(--green); }
+    .method.patch { background: var(--orange-soft); color: var(--orange); }
+    .method.delete { background: var(--red-soft); color: var(--red); }
+    .ep .path { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+    .ep .desc { color: var(--text-2); font-size: 13.5px; margin: 6px 0 0; }
+    .ep .scope { margin-left: auto; }
+    pre.code {
+      background: var(--fill); border-radius: 10px; padding: 14px 16px;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+      overflow-x: auto; margin: 10px 0 0; border: 1px solid var(--hairline);
+    }
+    pre.code .cm { color: var(--muted); }
+    table.sc { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    table.sc th { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--hairline-strong); color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    table.sc td { padding: 9px 10px; border-bottom: 1px solid var(--hairline); }
+    table.sc code { font-family: var(--mono); font-size: 12.5px; background: var(--fill); padding: 2px 7px; border-radius: 5px; }
+    .anchor { scroll-margin-top: 20px; }
+  </style>
+</head>
+<body>
+<div class="docs">
+  <a class="back" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>返回控制台</a>
+  <div class="docs-head">
+    <div class="auth-appicon" style="width:52px;height:52px;border-radius:14px;margin:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:28px;height:28px"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></div>
+    <div>
+      <h1>API 文档</h1>
+      <p class="lead" style="margin:0">REST API 基地址为当前域名，所有接口位于 <code>/api/v1</code>，使用 API 密钥认证。</p>
+    </div>
+  </div>
+
+  <h3 class="m anchor" id="auth">认证</h3>
+  <p class="lead">在控制台「API 密钥」页面创建密钥（形如 <code>sk_…</code>），请求时通过 Header 携带：</p>
+  <pre class="code">Authorization: Bearer sk_xxxxxxxxxxxxxxxxxxxxxxxx</pre>
+  <p class="lead">所有响应为 JSON：<code>{"ok": true, "data": …}</code> 或 <code>{"ok": false, "error": {"code": "…", "message": "…"}}</code>。接口已开启 CORS，可从任意来源调用。</p>
+
+  <h3 class="m anchor" id="scopes">权限范围</h3>
+  <table class="sc">
+    <thead><tr><th>Scope</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>links:read</code></td><td>读取短链列表、详情与点击统计</td></tr>
+      <tr><td><code>links:write</code></td><td>创建、修改、删除短链</td></tr>
+      <tr><td><code>logs:read</code></td><td>读取访问记录（受账户权限限制）</td></tr>
+      <tr><td><code>domains:read</code></td><td>读取可用域名列表</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="m anchor" id="endpoints">端点</h3>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/me</span></div>
+    <p class="desc">查看密钥归属的用户与权限。</p>
+    <pre class="code">curl -H "Authorization: Bearer $KEY" https://your-domain.com/api/v1/me</pre>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/domains</span><span class="badge badge-gray scope">domains:read</span></div>
+    <p class="desc">列出密钥可用的短链域名。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method post">POST</span><span class="path">/api/v1/links</span><span class="badge badge-gray scope">links:write</span></div>
+    <p class="desc">创建短链。body 字段：</p>
+    <pre class="code">{
+  "url": "https://example.com/long/path",   <span class="cm">// 必填，http(s)</span>
+  "domain": "s.example.com",                <span class="cm">// 可选，缺省用第一个可用域名（也可传 id）</span>
+  "code": "my-link",                        <span class="cm">// 可选，缺省随机生成（1-64 位 [A-Za-z0-9_-]）</span>
+  "length": 6,                              <span class="cm">// 随机后缀长度 4-10，默认 6</span>
+  "mode": "direct",                         <span class="cm">// direct | page | confirm</span>
+  "style": {                                <span class="cm">// 中转页/确认页自定义</span>
+    "animation": "orbit",                   <span class="cm">// orbit | progress | pulse | fade（page 模式）</span>
+    "duration": 1200,                       <span class="cm">// 停留毫秒数 500-5000（page 模式）</span>
+    "title": "即将跳转", "desc": "", "button": "继续访问",
+    "color": "#0a84ff"
+  },
+  "note": "备注",                            <span class="cm">// 可选</span>
+  "expires_at": "2027-01-01T00:00:00Z"      <span class="cm">// 可选，ISO 时间或毫秒时间戳</span>
+}</pre>
+    <pre class="code">curl -X POST https://your-domain.com/api/v1/links \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","code":"demo"}'
+
+<span class="cm"># → {"ok":true,"data":{"id":1,"short_url":"https://s.example.com/demo", ...}}</span></pre>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/links</span><span class="badge badge-gray scope">links:read</span></div>
+    <p class="desc">列出短链。查询参数：<code>page</code>、<code>per</code>（1-100，默认 20）、<code>domain</code>（hostname 或 id）。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/links/:id</span><span class="badge badge-gray scope">links:read</span></div>
+    <p class="desc">获取单条短链详情。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method patch">PATCH</span><span class="path">/api/v1/links/:id</span><span class="badge badge-gray scope">links:write</span></div>
+    <p class="desc">修改短链。可更新 <code>url</code>、<code>note</code>、<code>mode</code>、<code>style</code>、<code>enabled</code>、<code>expires_at</code>（传 <code>null</code> 取消过期）。</p>
+    <pre class="code">curl -X PATCH https://your-domain.com/api/v1/links/1 \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/updated"}'</pre>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method delete">DELETE</span><span class="path">/api/v1/links/:id</span><span class="badge badge-gray scope">links:write</span></div>
+    <p class="desc">删除短链及其访问记录。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/links/:id/stats</span><span class="badge badge-gray scope">links:read</span></div>
+    <p class="desc">点击统计：累计 / 今日 / 7 日 / 30 日，附带最近 10 条访问（IP、地区、UA）。</p>
+  </div>
+
+  <h3 class="m anchor" id="errors">错误码</h3>
+  <table class="sc">
+    <thead><tr><th>HTTP</th><th>code</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>400</td><td><code>invalid_target</code></td><td>目标链接无效（必须是 http/https）</td></tr>
+      <tr><td>400</td><td><code>invalid_code</code></td><td>后缀格式无效或为保留字</td></tr>
+      <tr><td>401</td><td><code>unauthorized</code></td><td>缺少或错误的 API 密钥</td></tr>
+      <tr><td>403</td><td><code>insufficient_scope</code></td><td>密钥缺少所需权限范围</td></tr>
+      <tr><td>403</td><td><code>forbidden</code></td><td>账户无相应权限（域名范围 / 功能开关）</td></tr>
+      <tr><td>403</td><td><code>quota_exceeded</code></td><td>超出账户短链数量配额</td></tr>
+      <tr><td>404</td><td><code>not_found</code></td><td>资源不存在</td></tr>
+      <tr><td>409</td><td><code>code_taken</code></td><td>后缀已被占用</td></tr>
+    </tbody>
+  </table>
+
+  <p class="lead" style="margin-top:34px;color:var(--muted);font-size:13px">ShortLink · 运行于 Cloudflare Workers + D1</p>
+</div>
+</body>
+</html>

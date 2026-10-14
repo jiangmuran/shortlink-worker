@@ -1,0 +1,29 @@
+{
+  "name": "shortlink-worker",
+  "version": "1.0.0",
+  "description": "Self-hosted short link service on Cloudflare Workers + D1: multi-domain, multi-user, passkey login, API keys, redirect pages, access logs.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply shortlink --local",
+    "db:migrate": "wrangler d1 migrations apply shortlink --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jiangmuran/shortlink-worker.git"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "d1",
+    "url-shortener",
+    "short-link",
+    "passkey",
+    "webauthn"
+  ]
+}
