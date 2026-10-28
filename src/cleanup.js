@@ -47,6 +47,18 @@ export async function runMaintenance(env) {
     .run();
   result.notes_burned = burned.meta.changes || 0;
 
+  // 2b. drop R2 image objects for any burned note (the bulk burn above and the
+  // manual-burn path both leave orphaned attachments otherwise)
+  if (env.MEDIA) {
+    const { results: orphans } = await env.DB
+      .prepare('SELECT m.id, m.link_id FROM note_media m JOIN notes n ON n.link_id = m.link_id WHERE n.burned_at IS NOT NULL LIMIT 1000')
+      .all();
+    for (const o of orphans || []) await env.MEDIA.delete(`note/${o.link_id}/${o.id}`).catch(() => {});
+    if ((orphans || []).length) {
+      await env.DB.prepare('DELETE FROM note_media WHERE link_id IN (SELECT link_id FROM notes WHERE burned_at IS NOT NULL)').run();
+    }
+  }
+
   // 3. sessions, logs, links
   const sessions = await env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now).run();
   result.sessions_deleted = sessions.meta.changes || 0;

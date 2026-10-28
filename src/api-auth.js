@@ -87,6 +87,7 @@ export function registerAuthRoutes(r) {
         needsSetup: !row || row.n === 0,
         site_name: settings.site_name,
         host: new URL(ctx.req.url).host,
+        features: { media: !!ctx.env.MEDIA },
         settings: { default_mode: settings.default_mode, default_style: settings.default_style },
       });
     },

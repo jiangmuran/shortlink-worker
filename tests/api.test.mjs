@@ -101,7 +101,7 @@ async function decryptNote(cipherB64, keyB64) {
 
 function resetDb() {
   const sql = [
-    'DELETE FROM logs', 'DELETE FROM link_daily', 'DELETE FROM note_templates', 'DELETE FROM notes', 'DELETE FROM links', 'DELETE FROM domains',
+    'DELETE FROM logs', 'DELETE FROM link_daily', 'DELETE FROM note_templates', 'DELETE FROM note_media', 'DELETE FROM notes', 'DELETE FROM links', 'DELETE FROM domains',
     'DELETE FROM api_keys', 'DELETE FROM passkeys', 'DELETE FROM sessions', 'DELETE FROM access_tokens',
     'DELETE FROM audit_logs', 'DELETE FROM usage_counters', 'DELETE FROM users',
     "DELETE FROM groups WHERE builtin IS NULL", "DELETE FROM settings WHERE key IN ('rollup_until', 'site_name')",
@@ -336,6 +336,22 @@ async function main() {
   check('template delete unknown → 404', r.status === 404, r.text);
   r = await admin.del(`/api/note-templates/${tplId}`);
   check('template delete', r.status === 200 && r.data.deleted, r.text);
+
+  // image attachments (server-encrypted note → no client crypto needed) against local R2
+  const imgB64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4, 5, 6, 7, 8]).toString('base64url');
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'with pics' }, max_opens: 1 });
+  check('create note for media', r.status === 201, r.text);
+  const picNote = r.data.item;
+  r = await admin.post(`/api/notes/${picNote.id}/media`, { mime: 'image/png', data: imgB64 });
+  check('media upload', r.status === 201 && r.data.item.id && r.data.item.mime === 'image/png', r.text);
+  r = await admin.post(`/api/notes/${picNote.id}/media`, { mime: 'application/pdf', data: imgB64 });
+  check('media rejects non-image', r.status === 400, r.text);
+  const picV = new Client('s.test');
+  r = await picV.post(`/api/n/${picNote.code}/open`, {});
+  check('open returns media', r.status === 200 && Array.isArray(r.data.media) && r.data.media.length === 1 && r.data.media[0].data === imgB64 && r.data.burned, r.text);
+  // last open burned it → attachments gone
+  r = await admin.get(`/api/notes/${picNote.id}`);
+  check('note burned after open', r.data?.item?.status === 'burned', r.text);
   r = await admin.get('/api/links');
   check('note not in links list', !r.data.items.some((l) => l.id === note.id), r.text);
   r = await new Client('s.test').get(`/${note.code}`, { headers: { 'user-agent': 'Mozilla/5.0' } });

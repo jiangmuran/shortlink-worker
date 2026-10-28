@@ -440,3 +440,47 @@ export class SecureText {
     this.mask = this.fg = this.bg = this.noise = this.text = this._chars = null;
   }
 }
+
+// SecureImage: draws a decoded image onto a canvas. The bytes are turned into a
+// transient Blob only to decode (createImageBitmap); no <img>, no object URL,
+// nothing extractable is left in the DOM. Right-click and drag are blocked, so
+// an attached image is no easier to lift than the drawn text.
+export class SecureImage {
+  constructor(host) {
+    this.host = host;
+    host.classList.add('sx-host');
+    this.canvas = document.createElement('canvas');
+    this.canvas.className = 'sx-canvas sx-img';
+    host.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext('2d');
+    this._block = (e) => e.preventDefault();
+    this.canvas.addEventListener('contextmenu', this._block);
+    this.canvas.addEventListener('dragstart', this._block);
+  }
+  async render(bytes, mime) {
+    try {
+      const bmp = await createImageBitmap(new Blob([bytes], { type: mime || 'image/png' }));
+      const maxW = this.host.clientWidth || 320;
+      const scale = Math.min(1, maxW / bmp.width);
+      const w = Math.max(1, Math.round(bmp.width * scale));
+      const h = Math.max(1, Math.round(bmp.height * scale));
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      this.canvas.width = Math.round(w * dpr);
+      this.canvas.height = Math.round(h * dpr);
+      this.canvas.style.width = w + 'px';
+      this.canvas.style.height = h + 'px';
+      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.ctx.clearRect(0, 0, w, h);
+      this.ctx.drawImage(bmp, 0, 0, w, h);
+      bmp.close?.();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  destroy() {
+    this.canvas.removeEventListener('contextmenu', this._block);
+    this.canvas.removeEventListener('dragstart', this._block);
+    this.canvas.remove();
+  }
+}

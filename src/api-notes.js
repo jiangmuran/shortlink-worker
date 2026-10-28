@@ -193,6 +193,43 @@ async function burnNote(env, linkId, reason) {
     .prepare('UPDATE notes SET cipher = NULL, burned_at = ?, burn_reason = ? WHERE link_id = ? AND burned_at IS NULL')
     .bind(Date.now(), reason, linkId)
     .run();
+  await deleteNoteMedia(env, linkId);
+}
+
+// ---------- image attachments (stored in R2, binding MEDIA) ----------
+export const MEDIA_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+export const MAX_MEDIA = 6;
+export const MAX_MEDIA_BYTES = 2 * 1024 * 1024;
+const mediaKey = (linkId, id) => `note/${linkId}/${id}`;
+
+// Remove a note's R2 objects and their rows. No-op (and never throws) when the
+// MEDIA binding is absent, so the rest of the app works without R2 configured.
+export async function deleteNoteMedia(env, linkId) {
+  try {
+    const { results } = await env.DB.prepare('SELECT id FROM note_media WHERE link_id = ?').bind(linkId).all();
+    if (!results || !results.length) return;
+    if (env.MEDIA) await Promise.all(results.map((m) => env.MEDIA.delete(mediaKey(linkId, m.id)).catch(() => {})));
+    await env.DB.prepare('DELETE FROM note_media WHERE link_id = ?').bind(linkId).run();
+  } catch (e) {
+    console.error('media cleanup failed', e);
+  }
+}
+
+// Read a note's attachments for an open response. Returns [] when none or no R2.
+async function readNoteMedia(env, linkId, enc) {
+  if (!env.MEDIA) return [];
+  const { results } = await env.DB.prepare('SELECT id, mime FROM note_media WHERE link_id = ? ORDER BY id').bind(linkId).all();
+  const out = [];
+  for (const m of results || []) {
+    const obj = await env.MEDIA.get(mediaKey(linkId, m.id));
+    if (!obj) continue;
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    // e2e: bytes are client ciphertext → hand back base64, client decrypts.
+    // server: bytes are serverEncrypt(base64 string) → decrypt to that string.
+    const data = enc === 'server' ? await serverDecrypt(env, bytes) : b64urlEncode(bytes);
+    out.push({ id: m.id, mime: m.mime, data });
+  }
+  return out;
 }
 
 async function logOpen(env, ctx, linkId, req, status) {
@@ -403,6 +440,7 @@ export function registerNoteRoutes(r) {
   r.delete('/api/notes/:id', async (ctx) => {
     const row = await fetchNoteRow(ctx.env, ctx.params.id);
     if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '密信不存在');
+    await deleteNoteMedia(ctx.env, row.id);
     await deleteLinkCascade(ctx.env, row.id);
     if (row.created_by !== ctx.user.id) audit(ctx, 'note.delete', { type: 'note', id: row.id, detail: `${row.domain_hostname}/${row.code}` });
     return ok({});
@@ -417,6 +455,27 @@ export function registerNoteRoutes(r) {
     if (!raw?.cipher) throw new HttpError(410, 'burned', '密信已焚毁，内容已删除');
     if (row.created_by !== ctx.user.id) audit(ctx, 'note.view_content', { type: 'note', id: row.id, detail: `${row.domain_hostname}/${row.code}` });
     return ok({ payload: JSON.parse(await serverDecrypt(ctx.env, raw.cipher)) });
+  });
+
+  // Attach an image to a note. For e2e notes the client uploads ciphertext
+  // (encrypted with the note key); for server-encrypted notes it uploads the
+  // plaintext image and the server encrypts it. Bytes go to R2, metadata to D1.
+  r.post('/api/notes/:id/media', async (ctx) => {
+    if (!ctx.env.MEDIA) throw new HttpError(503, 'media_unavailable', '附件存储未启用');
+    const row = await fetchNoteRow(ctx.env, ctx.params.id);
+    if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '密信不存在');
+    if (row.n_burned_at) throw new HttpError(410, 'burned', '密信已结束');
+    const body = await readJsonBody(ctx.req);
+    if (!MEDIA_MIME.includes(body.mime)) throw new HttpError(400, 'invalid_input', '不支持的图片格式');
+    let bytes;
+    try { bytes = b64urlDecode(String(body.data || '')); } catch { throw new HttpError(400, 'invalid_input', '附件数据无效'); }
+    if (!bytes.length || bytes.length > MAX_MEDIA_BYTES) throw new HttpError(413, 'too_large', `单张图片不能超过 ${MAX_MEDIA_BYTES / 1024 / 1024} MB`);
+    const count = await ctx.env.DB.prepare('SELECT COUNT(*) AS n FROM note_media WHERE link_id = ?').bind(row.id).first();
+    if (count.n >= MAX_MEDIA) throw new HttpError(403, 'quota_exceeded', `每封密信最多 ${MAX_MEDIA} 张图片`);
+    const store = row.n_enc === 'server' ? await serverEncrypt(ctx.env, String(body.data)) : bytes;
+    const res = await ctx.env.DB.prepare('INSERT INTO note_media(link_id, mime, size, created_at) VALUES(?,?,?,?) RETURNING id').bind(row.id, body.mime, bytes.length, Date.now()).first();
+    await ctx.env.MEDIA.put(mediaKey(row.id, res.id), store);
+    return ok({ item: { id: res.id, mime: body.mime, size: bytes.length } }, { status: 201 });
   });
 
   // ---------- public open ----------
@@ -537,6 +596,8 @@ export function registerNoteRoutes(r) {
       };
       if (opened.enc === 'server') res.payload = JSON.parse(await serverDecrypt(env, opened.cipher));
       else res.cipher = b64urlEncode(new Uint8Array(opened.cipher));
+      res.media = await readNoteMedia(env, link.id, opened.enc);
+      if (lastOpen) await deleteNoteMedia(env, link.id);
       const headers = { 'cache-control': 'no-store' };
       if (setDeviceCookie) headers['set-cookie'] = `sl_d=${device}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`;
       return ok(res, { headers });

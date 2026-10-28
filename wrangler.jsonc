@@ -25,6 +25,9 @@
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "ChatRoom" }]
   },
+  // 密信图片附件存储。本地 `wrangler dev` 会自动模拟，无需真实桶；
+  // 生产部署前需先 `npx wrangler r2 bucket create shortlink-media`
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "shortlink-media" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatRoom"] }],
   "triggers": {
     // 每小时第 17 分钟运行一次清理任务

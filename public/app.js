@@ -2,7 +2,7 @@
    ShortLink console SPA — vanilla JS, no dependencies
    ============================================================ */
 
-import { NOTE_THEMES, SECURE_MODES, encryptNote, mountNote, fmtDuration, displayParams } from '/note.js';
+import { NOTE_THEMES, SECURE_MODES, encryptNote, encryptBytes, b64u, mountNote, fmtDuration, displayParams } from '/note.js';
 import { SecureText } from '/secure-render.js';
 
 /* ---------------- tiny helpers ---------------- */
@@ -1583,6 +1583,13 @@ function openNoteComposer(domains, onSaved) {
               <textarea class="textarea" id="nText" name="text" rows="7" placeholder="写下只想让对方看一次的内容"></textarea>
               <div class="field-hint"><span id="nBytes">0 字节</span> / ${nc.max_kb || 64} KB · 内容${e2eAllowed ? '在你的浏览器里加密后才上传' : '加密保存在服务器上'}，对方看到的是画出来的文字，无法选中或复制</div>
             </div>
+            ${bootstrap?.features?.media ? `
+            <div class="field">
+              <label>图片 <span class="opt">最多 6 张</span></label>
+              <input type="file" id="nPics" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+              <div class="pic-strip" id="picStrip"><button type="button" class="pic-add" id="nPicsBtn">+ 添加图片</button></div>
+              <div class="field-hint">打开时画在画布上，和文字一样不可下载、不可直接读取</div>
+            </div>` : ''}
           </div>
 
           <div class="form-section">
@@ -1950,6 +1957,40 @@ function openNoteComposer(domains, onSaved) {
   });
   loadTemplates();
 
+  // ---------- image attachments ----------
+  const pics = []; // { file, url }
+  const picStrip = $('#picStrip', root);
+  if (picStrip) {
+  const renderPics = () => {
+    picStrip.querySelectorAll('.pic-thumb').forEach((n) => n.remove());
+    const addBtn = $('#nPicsBtn', root);
+    pics.forEach((p, i) => {
+      const t = document.createElement('div');
+      t.className = 'pic-thumb';
+      t.innerHTML = `<img src="${p.url}" alt=""><button type="button" class="pic-del" data-i="${i}" aria-label="移除">×</button>`;
+      picStrip.insertBefore(t, addBtn);
+    });
+    addBtn.hidden = pics.length >= 6;
+  };
+  $('#nPicsBtn', root).addEventListener('click', () => $('#nPics', root).click());
+  $('#nPics', root).addEventListener('change', (e) => {
+    for (const f of e.target.files) {
+      if (pics.length >= 6) break;
+      if (f.size > 2 * 1024 * 1024) { toast(`${f.name} 超过 2MB`, 'err'); continue; }
+      pics.push({ file: f, url: URL.createObjectURL(f) });
+    }
+    e.target.value = '';
+    renderPics();
+  });
+  picStrip.addEventListener('click', (e) => {
+    const b = e.target.closest('.pic-del');
+    if (!b) return;
+    const [p] = pics.splice(Number(b.dataset.i), 1);
+    if (p) URL.revokeObjectURL(p.url);
+    renderPics();
+  });
+  }
+
   $('#noteSave', root).addEventListener('click', async (ev) => {
     const errEl = $('#noteErr', root);
     errEl.hidden = true;
@@ -2000,6 +2041,12 @@ function openNoteComposer(domains, onSaved) {
         body.payload = { text };
       }
       const { item } = await api('/api/notes', { method: 'POST', body });
+      for (const p of pics) {
+        const buf = new Uint8Array(await p.file.arrayBuffer());
+        const data = key ? await encryptBytes(key, buf) : b64u(buf);
+        await api(`/api/notes/${item.id}/media`, { method: 'POST', body: { mime: p.file.type, data } });
+        URL.revokeObjectURL(p.url);
+      }
       const url = key ? `${item.url}#k=${key}` : item.url;
       if (key) rememberNoteUrl(item.id, url);
       viewer?.destroy();

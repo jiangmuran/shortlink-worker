@@ -5,7 +5,7 @@
 // Imported by the console for encryption and the live preview, so composer and
 // visitor render identically.
 
-import { SecureText, SECURE_MODES, modeInfo } from './secure-render.js';
+import { SecureText, SecureImage, SECURE_MODES, modeInfo } from './secure-render.js';
 
 export { SECURE_MODES } from './secure-render.js';
 
@@ -47,6 +47,22 @@ export async function encryptNote(payload) {
   out.set(ct, iv.length);
   const k = b64u(keyBytes);
   return { cipher: b64u(out), key: k, kcv: await keyCheck(k) };
+}
+// Encrypt arbitrary bytes (e.g. an image) with an existing note key. Mirrors
+// encryptNote's iv||ct layout so the same key opens both. Returns base64.
+export async function encryptBytes(keyB64, bytes) {
+  const key = await crypto.subtle.importKey('raw', unb64u(keyB64), 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv, 0);
+  out.set(ct, iv.length);
+  return b64u(out);
+}
+export async function decryptBytes(cipherB64, keyB64) {
+  const bytes = unb64u(cipherB64);
+  const key = await crypto.subtle.importKey('raw', unb64u(keyB64), 'AES-GCM', false, ['decrypt']);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.subarray(0, 12) }, key, bytes.subarray(12)));
 }
 export async function decryptNote(cipherB64, keyB64) {
   const bytes = unb64u(cipherB64);
@@ -99,6 +115,7 @@ export function mountNote(root, data, opts = {}) {
   const key = preview ? null : new URLSearchParams((location.hash || '').slice(1)).get('k');
   let attemptsLeft = data.attempts_left ?? null;
   let secure = null;
+  let mediaViews = [];
   const timers = [];
   const clear = () => {
     while (timers.length) clearTimeout(timers.pop());
@@ -106,6 +123,8 @@ export function mountNote(root, data, opts = {}) {
       secure.destroy();
       secure = null;
     }
+    mediaViews.forEach((v) => v.destroy());
+    mediaViews = [];
   };
 
   const from = meta.from || '';
@@ -256,6 +275,24 @@ export function mountNote(root, data, opts = {}) {
       viewHost.addEventListener('pointercancel', up);
       viewHost.setAttribute('role', 'button');
       viewHost.setAttribute('aria-label', '按住查看');
+    }
+
+    const media = (res && res.media) || [];
+    if (media.length) {
+      const gallery = document.createElement('div');
+      gallery.className = 'nt-gallery';
+      viewHost.appendChild(gallery);
+      media.forEach(async (m) => {
+        try {
+          const bytes = res.enc === 'server' ? unb64u(m.data) : await decryptBytes(m.data, key);
+          const cell = document.createElement('div');
+          cell.className = 'nt-shot';
+          gallery.appendChild(cell);
+          const img = new SecureImage(cell);
+          mediaViews.push(img);
+          await img.render(bytes, m.mime);
+        } catch { /* skip a bad attachment */ }
+      });
     }
 
     if (!autoFinish) {
