@@ -89,16 +89,33 @@ await page.click('.modal-overlay .modal-head [data-close]');
 await page.click('a[href="/notes"]');
 await page.click('#newNoteBtn');
 await page.waitForSelector('#previewRoot .nt-card');
-await page.fill('#nText', '**门禁** 4721#\n\n进门左转第二间。');
-await page.click('[data-fmt="markdown"]');
+await page.fill('#nText', '门禁 4721#，进门左转第二间。');
 await page.fill('[name="title"]', '给小林的信');
+await page.click('[data-nmode="type"]');
 await page.click('[data-theme-pick="letter"]');
 await page.selectOption('[name="max_opens"]', '2');
 await page.waitForTimeout(400);
 ok('preview shows cover', (await page.textContent('#previewRoot')).includes('给小林的信'));
+// a canvas with drawn content (not a blank fill): sample pixels and check variance
+const canvasHasContent = (page, sel) =>
+  page.evaluate((s) => {
+    const c = document.querySelector(s);
+    if (!c) return false;
+    const g = c.getContext('2d');
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let min = 255, max = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] < min) min = d[i];
+      if (d[i] > max) max = d[i];
+    }
+    return max - min > 30;
+  }, sel);
+
 await page.click('#previewRoot .nt-btn');
-await page.waitForTimeout(300);
-ok('preview plays content locally', (await page.textContent('#previewRoot .nt-content')).includes('4721'));
+await page.waitForSelector('#previewRoot .nt-view canvas');
+await page.waitForTimeout(400);
+ok('preview renders on canvas', await canvasHasContent(page, '#previewRoot .nt-view canvas'));
+ok('preview text not in DOM', !(await page.textContent('#previewRoot')).includes('4721'));
 await shot(page, 'composer');
 await page.click('#noteSave');
 await page.waitForSelector('text=密信已生成');
@@ -109,62 +126,81 @@ await page.waitForSelector('.tbl');
 ok('note listed as pending', (await page.textContent('#notesList')).includes('待查看'));
 
 const visitUrl = noteUrl.replace('https://s.localhost', SHORT);
-const { ctx: vctx, page: v } = await newPage('visitor');
+const { ctx: cv, page: v } = await newPage('visitor');
 await v.goto(visitUrl);
 await v.waitForSelector('.nt-card .nt-btn');
 ok('visitor sees cover only', (await v.textContent('body')).includes('给小林的信') && !(await v.textContent('body')).includes('4721'));
 ok('theme applied', await v.evaluate(() => document.body.classList.contains('nt-letter')));
 await shot(v, 'visitor-cover', '.nt-card');
 await v.click('.nt-btn');
-await v.waitForSelector('.nt-content strong');
-ok('visitor decrypts markdown', (await v.textContent('.nt-content')).includes('门禁 4721#'));
-ok('remaining shown', (await v.textContent('.nt-foot')).includes('还能查看 1 次'));
+await v.waitForSelector('.nt-view canvas');
+await v.waitForTimeout(400);
+ok('visitor content on canvas', await canvasHasContent(v, '.nt-view canvas'));
+ok('plaintext never in DOM', !(await v.content()).includes('4721'));
+ok('content not selectable', await v.evaluate(() => getComputedStyle(document.querySelector('.nt-view')).userSelect === 'none'));
 await shot(v, 'visitor-read', '.nt-card');
-await v.click('text=看完了，清除内容');
-ok('content cleared from screen', (await v.locator('.nt-content').count()) === 0);
+await v.click('text=看完了');
+await v.waitForSelector('.nt-end');
+ok('content cleared from screen', (await v.locator('.nt-view').count()) === 0);
+await cv.close();
 
 // missing key: must not consume an open
-const { page: v2 } = await newPage('visitor-nokey');
+const { ctx: cv2, page: v2 } = await newPage('visitor-nokey');
 await v2.goto(visitUrl.split('#')[0]);
-await v2.waitForSelector('.nt-gone');
-ok('missing key handled', (await v2.textContent('.nt-gone')).includes('链接不完整'));
+await v2.waitForSelector('.nt-end');
+ok('missing key handled', (await v2.textContent('.nt-end')).includes('链接不完整'));
+await cv2.close();
 
-// second (last) open burns it
-const { page: v3 } = await newPage('visitor-2');
+// second (last) open uses it up
+const { ctx: cv3, page: v3 } = await newPage('visitor-2');
 await v3.goto(visitUrl);
-await v3.waitForSelector('.nt-warn');
-ok('last-chance warning', (await v3.textContent('.nt-warn')).includes('唯一一次'));
+await v3.waitForSelector('.nt-btn');
+ok('last-chance button', (await v3.textContent('.nt-btn')).includes('仅此一次'));
 await v3.click('.nt-btn');
-await v3.waitForSelector('.nt-content');
-ok('second open burns', (await v3.textContent('.nt-foot')).includes('已焚毁'));
-const { page: v4 } = await newPage('visitor-3');
+await v3.waitForSelector('.nt-view canvas');
+await v3.waitForTimeout(500);
+ok('second open shows content', await canvasHasContent(v3, '.nt-view canvas'));
+await cv3.close();
+const { ctx: cv4, page: v4 } = await newPage('visitor-3');
 await v4.goto(visitUrl);
-await v4.waitForSelector('.nt-gone');
-ok('burned page', (await v4.textContent('.nt-gone')).includes('已焚毁'));
+await v4.waitForSelector('.nt-end');
+ok('used-up page is quiet (no 焚毁)', (await v4.textContent('.nt-end')).includes('看过了') && !(await v4.textContent('body')).includes('焚毁'));
 await shot(v4, 'visitor-burned', '.nt-card');
+await cv4.close();
 
-// sliding window mode, plain text
+// motion (anti-screenshot) mode: a single frame must be mostly noise, not readable text
 await page.click('#newNoteBtn');
 await page.waitForSelector('#previewRoot .nt-card');
 await page.fill('#nText', '一二三四五六七八九十');
-await page.click('[data-nmode="window"]');
-await page.selectOption('[name="window"]', '4');
-await page.selectOption('[name="speed"]', '120');
+await page.click('[data-nmode="motion"]');
 await page.click('[data-theme-pick="term"]');
 await page.click('#noteSave');
 await page.waitForSelector('text=密信已生成');
-const winUrl = (await page.textContent('.note-url')).trim().replace('https://s.localhost', SHORT);
+const motionUrl = (await page.textContent('.note-url')).trim().replace('https://s.localhost', SHORT);
 await page.click('.modal-overlay .modal-head [data-close]');
-const { page: w } = await newPage('visitor-window');
-await w.goto(winUrl);
-await w.click('.nt-btn');
-await w.waitForSelector('.nt-window');
-await w.waitForTimeout(700);
-const shown = (await w.textContent('.nt-window')).length;
-ok('sliding window shows at most 4 chars', shown > 0 && shown <= 4, shown);
-await shot(w, 'visitor-window', '.nt-card');
-await w.waitForSelector('.nt-gone', { timeout: 6000 });
-ok('window mode ends burned', true);
+const { ctx: cmo, page: mo } = await newPage('visitor-motion');
+await mo.goto(motionUrl);
+await mo.click('.nt-btn');
+await mo.waitForSelector('.nt-view canvas');
+await mo.waitForTimeout(400);
+// motion still frame: roughly half the pixels black, half white (noise), high edge density
+const noisy = await mo.evaluate(() => {
+  const c = document.querySelector('.nt-view canvas');
+  const g = c.getContext('2d');
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let black = 0, total = 0, flips = 0, prev = -1;
+  for (let i = 0; i < d.length; i += 4) {
+    total++;
+    const b = d[i] < 128 ? 1 : 0;
+    if (b) black++;
+    if (prev !== -1 && b !== prev) flips++;
+    prev = b;
+  }
+  return { ratio: black / total, flipRate: flips / total };
+});
+ok('motion still frame is noise', noisy.ratio > 0.25 && noisy.ratio < 0.75 && noisy.flipRate > 0.2, JSON.stringify(noisy));
+await shot(mo, 'visitor-motion', '.nt-card');
+await cmo.close();
 
 // ---------- users: restricted account + login link ----------
 await page.click('a[href="/users"]');

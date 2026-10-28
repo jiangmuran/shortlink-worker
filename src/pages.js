@@ -177,10 +177,10 @@ function animDecor(animation) {
 // /_sl/note.js fetches and decrypts the content after the visitor taps "view".
 export function renderNotePage(data) {
   const meta = data.meta || {};
-  const title = meta.title || '你收到一封密信';
+  const title = meta.title || '一条私密消息';
   const theme = data.theme?.name || 'min';
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  const desc = meta.hint || (data.status === 'burned' ? '这封密信已焚毁' : '打开后才能看到内容');
+  const desc = meta.hint || '打开后才能看到内容';
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -199,10 +199,11 @@ export function renderNotePage(data) {
   <div class="nt-card">
     <div class="nt-head"><div class="nt-title">${escapeHtml(title)}</div></div>
     <p class="nt-hint">${escapeHtml(desc)}</p>
-    <noscript><p class="nt-hint">查看密信需要启用 JavaScript。</p></noscript>
+    <noscript><p class="nt-hint">查看这条消息需要启用 JavaScript。</p></noscript>
   </div>
 </main>
 <script type="application/json" id="note-data">${json}</script>
+<script>(function(){var b=function(e){e.preventDefault()};document.addEventListener('contextmenu',b);document.addEventListener('copy',b);document.addEventListener('cut',b);document.addEventListener('selectstart',b);document.addEventListener('dragstart',b)})();</script>
 <script type="module" src="/_sl/note.js"></script>
 </body>
 </html>`;

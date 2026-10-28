@@ -13,22 +13,31 @@ import { audit } from './audit.js';
 import { ok, HttpError, readJsonBody, parseIntOr, parseDateToMs, safeParseJson, b64urlEncode, b64urlDecode, normalizeTargetUrl } from './util.js';
 
 export const NOTE_THEMES = ['min', 'letter', 'term', 'noir'];
-export const NOTE_MODES = ['direct', 'click', 'type', 'window', 'countdown'];
+export const NOTE_MODES = ['motion', 'comp', 'plain', 'type', 'window', 'countdown'];
 const HOUR = 3600000;
 
 const str = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
 
 export function sanitizeDisplay(raw) {
   const d = raw && typeof raw === 'object' ? raw : {};
-  const after = ['burned', 'message', 'redirect'].includes(d.after) ? d.after : 'burned';
+  const after = ['quiet', 'message', 'redirect'].includes(d.after) ? d.after : 'quiet';
   return {
-    mode: NOTE_MODES.includes(d.mode) ? d.mode : 'click',
+    mode: NOTE_MODES.includes(d.mode) ? d.mode : 'motion',
+    hold: !!d.hold,
+    hide_on_blur: !!d.hide_on_blur,
+    // motion (mspeed is tenths of a pixel/frame: 3..30 -> 0.3..3.0)
+    mspeed: parseIntOr(d.mspeed, 10, { min: 3, max: 30 }),
+    speed: parseIntOr(d.speed, 120, { min: 30, max: 2000 }),
+    contrast: parseIntOr(d.contrast, 88, { min: 20, max: 100 }),
+    cell: parseIntOr(d.cell, 2, { min: 1, max: 4 }),
+    density: d.density === 'gray' ? 'gray' : 'bin',
+    // comp
+    interval: parseIntOr(d.interval, 1, { min: 1, max: 6 }),
+    refresh: parseIntOr(d.refresh, 8, { min: 0, max: 60 }),
+    // type / window / countdown
     chunk: parseIntOr(d.chunk, 2, { min: 1, max: 50 }),
     window: parseIntOr(d.window, 6, { min: 2, max: 40 }),
-    speed: parseIntOr(d.speed, 120, { min: 30, max: 2000 }),
     seconds: parseIntOr(d.seconds, 30, { min: 3, max: 3600 }),
-    skip: !!d.skip,
-    hide_on_blur: !!d.hide_on_blur,
     after,
     after_text: after === 'message' ? str(d.after_text, 140) : null,
     after_url: after === 'redirect' ? normalizeTargetUrl(d.after_url) : null,

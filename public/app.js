@@ -2,7 +2,7 @@
    ShortLink console SPA — vanilla JS, no dependencies
    ============================================================ */
 
-import { NOTE_THEMES, NOTE_MODES, encryptNote, mountNote, renderMarkdown, fmtDuration } from '/note.js';
+import { NOTE_THEMES, SECURE_MODES, encryptNote, mountNote, fmtDuration } from '/note.js';
 
 /* ---------------- tiny helpers ---------------- */
 
@@ -1274,7 +1274,7 @@ const LOG_STATUS = {
   opened: ['ok', '已打开'],
   denied_password: ['warn', '密码错误'],
   exhausted: ['warn', '次数用完'],
-  burned: ['', '已焚毁'],
+  burned: ['', '已结束'],
   expired: ['warn', '已过期'],
   disabled: ['warn', '已停用'],
 };
@@ -1312,7 +1312,7 @@ function openLinkLogs(link) {
     ipNote.hidden = data.can_export || data.ip_policy === 'full';
     ipNote.textContent = data.ip_policy === 'masked' ? '访客 IP 已按账户设置打码' : data.ip_policy === 'none' ? '访客 IP 已按账户设置隐藏' : '';
     if (!data.items.length) {
-      box.innerHTML = emptyHtml('inbox', '暂无访问', link.kind === 'note' ? '这封密信还没有被打开过' : '这个短链还没有被访问过');
+      box.innerHTML = emptyHtml('inbox', '暂无访问', link.kind === 'note' ? '这条密信还没有被打开过' : '这个短链还没有被访问过');
       return;
     }
     box.innerHTML = `
@@ -1334,7 +1334,7 @@ function openLinkLogs(link) {
 
 const notesState = { q: '', status: '', page: 1 };
 const NOTE_KEYS = 'sl-note-links';
-const BURN_REASON = { exhausted: '次数用完', password: '密码错误过多', manual: '手动销毁', expired: '到期销毁' };
+const BURN_REASON = { exhausted: '次数用完', password: '密码错误过多', manual: '手动结束', expired: '到期结束' };
 
 // E2E links carry the key after "#", which the server never sees. Remember it in
 // this browser so the author can copy the full link again later.
@@ -1360,7 +1360,7 @@ function noteStatusHtml(n) {
     case 'opened':
       return `<span class="status ok">已打开</span><div class="cell-sub">${n.opens}${n.max_opens ? ` / ${n.max_opens}` : ''} 次</div>`;
     case 'burned':
-      return `<span class="status">已焚毁</span><div class="cell-sub">${BURN_REASON[n.burn_reason] || ''}</div>`;
+      return `<span class="status">已结束</span><div class="cell-sub">${BURN_REASON[n.burn_reason] || ''}</div>`;
     case 'expired':
       return '<span class="status warn">已过期</span>';
     default:
@@ -1397,7 +1397,7 @@ routes['/notes'] = {
           <div class="seg">
             <button data-st="" class="${notesState.status === '' ? 'on' : ''}">全部</button>
             <button data-st="live" class="${notesState.status === 'live' ? 'on' : ''}">进行中</button>
-            <button data-st="burned" class="${notesState.status === 'burned' ? 'on' : ''}">已焚毁</button>
+            <button data-st="burned" class="${notesState.status === 'burned' ? 'on' : ''}">已结束</button>
           </div>
         </div>
         <div id="notesList"></div>
@@ -1436,7 +1436,7 @@ routes['/notes'] = {
         $('#emptyNote')?.addEventListener('click', openComposer);
         return;
       }
-      const modeLabel = (id) => NOTE_MODES.find((x) => x.id === id)?.label || id;
+      const modeLabel = (id) => SECURE_MODES.find((x) => x.id === id)?.label || id;
       const themeLabel = (id) => NOTE_THEMES.find((x) => x.id === id)?.label || id;
       box.innerHTML = `
         <div class="tbl-wrap"><table class="tbl">
@@ -1527,7 +1527,7 @@ async function viewNoteContent(n) {
     openModal({
       title: `密信内容 · ${n.code}`,
       wide: true,
-      body: `<div class="note-content-view">${payload.format === 'markdown' ? renderMarkdown(payload.text) : `<div style="white-space:pre-wrap">${esc(payload.text)}</div>`}</div>`,
+      body: `<div class="note-content-view" style="white-space:pre-wrap">${esc(payload.text)}</div>`,
       footer: '<button class="btn btn-secondary" data-close>关闭</button>',
     });
   } catch (err) {
@@ -1567,11 +1567,9 @@ function openNoteComposer(domains, onSaved) {
         <form class="composer-form" novalidate>
           <div class="form-section">
             <div class="field">
-              <div class="label-row"><label for="nText">内容</label>
-                <div class="seg sm" id="fmtSeg"><button type="button" data-fmt="text" class="on">纯文本</button><button type="button" data-fmt="markdown">Markdown</button></div>
-              </div>
+              <label for="nText">内容</label>
               <textarea class="textarea" id="nText" name="text" rows="7" placeholder="写下只想让对方看一次的内容"></textarea>
-              <div class="field-hint"><span id="nBytes">0 字节</span> / ${nc.max_kb || 64} KB · 内容在${e2eAllowed ? '你的浏览器里加密后才上传' : '服务器上加密保存'}</div>
+              <div class="field-hint"><span id="nBytes">0 字节</span> / ${nc.max_kb || 64} KB · 内容${e2eAllowed ? '在你的浏览器里加密后才上传' : '加密保存在服务器上'}，对方看到的是画出来的文字，无法选中或复制</div>
             </div>
           </div>
 
@@ -1588,17 +1586,18 @@ function openNoteComposer(domains, onSaved) {
           </div>
 
           <div class="form-section">
-            <div class="form-section-title">显示方式</div>
-            <div class="seg block wrap" id="modeSeg">${NOTE_MODES.map((x) => `<button type="button" data-nmode="${x.id}" class="${x.id === state.mode ? 'on' : ''}">${x.label}</button>`).join('')}</div>
+            <div class="form-section-title">显示方式<span>改任意参数，右侧预览即时更新</span></div>
+            <div class="mode-cards" id="modeSeg">${SECURE_MODES.map((x) => `<button type="button" class="mode-card${x.id === state.mode ? ' on' : ''}" data-nmode="${x.id}"><b>${x.label}${x.tag ? `<span class="mode-tag${x.anti ? ' anti' : ''}">${x.tag}</span>` : ''}</b></button>`).join('')}</div>
             <div class="field-hint" id="modeDesc"></div>
             <div class="subpanel" id="modeOpts"></div>
-            <div class="form-grid" style="margin-top:14px">
-              <div class="field"><label>读完之后</label>
-                <select class="select" name="after"><option value="burned">显示「已焚毁」</option><option value="message">显示一句结束语</option><option value="redirect">跳转到一个链接</option></select>
+            <label class="toggle-row"><div class="txt"><b>按住才显示</b><span>手指按住画面时才显示，松开立即隐藏</span></div><span class="switch"><input type="checkbox" name="hold"><i></i></span></label>
+            <label class="toggle-row"><div class="txt"><b>切出页面时隐藏</b><span>访客切到别的应用或标签页时内容自动模糊</span></div><span class="switch"><input type="checkbox" name="hide_on_blur"><i></i></span></label>
+            <div class="form-grid" style="margin-top:4px">
+              <div class="field"><label>看完之后</label>
+                <select class="select" name="after"><option value="quiet">安静结束</option><option value="message">显示一句话</option><option value="redirect">跳转到一个链接</option></select>
               </div>
               <div class="field" id="afterBox" hidden><label id="afterLabel">结束语</label><input class="input" name="after_value" maxlength="300"></div>
             </div>
-            <label class="toggle-row"><div class="txt"><b>切出页面时隐藏内容</b><span>访客切到别的应用或标签页时内容自动模糊</span></div><span class="switch"><input type="checkbox" name="hide_on_blur"><i></i></span></label>
           </div>
 
           <div class="form-section">
@@ -1641,7 +1640,7 @@ function openNoteComposer(domains, onSaved) {
         <aside class="composer-preview">
           <div class="preview-label">访客看到的样子</div>
           <div class="preview-phone"><div class="nt-scope nt-min" id="previewScope"><div class="nt-wrap" id="previewRoot"></div></div></div>
-          <p class="field-hint" style="text-align:center">点「查看密信」可以试播显示效果，不会创建任何内容</p>
+          <p class="field-hint" style="text-align:center">点「打开」试播显示效果，不会创建任何内容</p>
         </aside>
       </div>`,
     footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="noteSave">${I.flame} 生成链接</button>`,
@@ -1649,41 +1648,67 @@ function openNoteComposer(domains, onSaved) {
   const root = m.root;
   const val = (n) => $(`[name="${n}"]`, root);
 
+  const slider = (name, label, min, max, step, def, fmt) =>
+    `<div class="slider-row"><label>${label}<b data-out="${name}"></b></label><input type="range" name="${name}" min="${min}" max="${max}" step="${step}" value="${def}" data-fmt="${fmt || ''}"></div>`;
+
   function modeOptsHtml() {
-    if (state.mode === 'type') {
-      return `<div class="form-grid">
-        <div class="field"><label>每次出现</label><select class="select" name="chunk">${[1, 2, 3, 5, 10].map((n) => `<option value="${n}" ${n === 2 ? 'selected' : ''}>${n} 个字</option>`).join('')}</select></div>
-        <div class="field"><label>速度</label><select class="select" name="speed"><option value="60">快</option><option value="120" selected>中</option><option value="240">慢</option></select></div>
-      </div>
-      <label class="toggle-row"><div class="txt"><b>允许点击直接显示全部</b></div><span class="switch"><input type="checkbox" name="skip"><i></i></span></label>`;
-    }
-    if (state.mode === 'window') {
-      return `<div class="form-grid">
-        <div class="field"><label>同时显示</label><select class="select" name="window">${[3, 4, 6, 8, 12].map((n) => `<option value="${n}" ${n === 6 ? 'selected' : ''}>${n} 个字</option>`).join('')}</select></div>
-        <div class="field"><label>速度</label><select class="select" name="speed"><option value="120">快</option><option value="220" selected>中</option><option value="400">慢</option></select></div>
-      </div>`;
-    }
-    if (state.mode === 'countdown') {
-      return `<div class="field"><label>显示时长</label><select class="select" name="seconds" style="max-width:240px">${[[10, '10 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟'], [300, '5 分钟']].map(([v, l]) => `<option value="${v}" ${v === 30 ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
-    }
-    return '';
+    const m = state.mode;
+    if (m === 'motion')
+      return (
+        slider('mspeed', '滚动速度', 3, 30, 1, 10, 'x10') +
+        slider('contrast', '对比度', 20, 100, 1, 88, 'pct') +
+        slider('cell', '噪点粗细', 1, 4, 1, 2, 'px') +
+        `<label class="toggle-row" style="margin-top:4px"><div class="txt"><b>灰度噪点</b><span>默认黑白，开启后更柔和</span></div><span class="switch"><input type="checkbox" name="density"><i></i></span></label>`
+      );
+    if (m === 'comp')
+      return (
+        slider('contrast', '对比度', 20, 100, 1, 34, 'pct') +
+        slider('interval', '翻转间隔', 1, 6, 1, 1, 'frame') +
+        slider('refresh', '噪点刷新', 0, 30, 1, 8, 'cycle') +
+        slider('cell', '噪点粗细', 1, 4, 1, 2, 'px')
+      );
+    if (m === 'type')
+      return slider('chunk', '每次出现', 1, 10, 1, 2, 'char') + slider('speed', '间隔', 40, 400, 10, 120, 'ms');
+    if (m === 'window')
+      return slider('window', '同时显示', 2, 14, 1, 6, 'char') + slider('speed', '间隔', 80, 600, 10, 220, 'ms');
+    if (m === 'countdown')
+      return slider('seconds', '显示时长', 3, 120, 1, 30, 'sec');
+    return '<p class="field-hint">打开即显示全文。</p>';
   }
 
   function readDisplay() {
     const after = val('after').value;
     const afterValue = val('after_value').value.trim();
+    const num = (n, d) => (val(n) ? Number(val(n).value) : d);
     return {
       mode: state.mode,
-      chunk: Number(val('chunk')?.value) || 2,
-      window: Number(val('window')?.value) || 6,
-      speed: Number(val('speed')?.value) || 120,
-      seconds: Number(val('seconds')?.value) || 30,
-      skip: !!val('skip')?.checked,
+      hold: val('hold').checked,
       hide_on_blur: val('hide_on_blur').checked,
+      mspeed: num('mspeed', 10),
+      contrast: num('contrast', state.mode === 'comp' ? 34 : 88),
+      cell: num('cell', 2),
+      density: !!val('density')?.checked ? 'gray' : 'bin',
+      interval: num('interval', 1),
+      refresh: num('refresh', 8),
+      chunk: num('chunk', 2),
+      window: num('window', 6),
+      speed: num('speed', state.mode === 'window' ? 220 : 120),
+      seconds: num('seconds', 30),
       after,
       after_text: after === 'message' ? afterValue : null,
       after_url: after === 'redirect' ? afterValue : null,
     };
+  }
+
+  function paintSliderOuts() {
+    $$('[data-out]', root).forEach((out) => {
+      const inp = val(out.dataset.out);
+      if (!inp) return;
+      const v = Number(inp.value);
+      const fmt = inp.dataset.fmt;
+      out.textContent =
+        fmt === 'x10' ? (v / 10).toFixed(1) + '×' : fmt === 'pct' ? v + '%' : fmt === 'px' ? v + 'px' : fmt === 'char' ? v + ' 字' : fmt === 'ms' ? v + 'ms' : fmt === 'sec' ? v + ' 秒' : fmt === 'frame' ? v + ' 帧' : fmt === 'cycle' ? (v ? v + ' 周期' : '不刷新') : v;
+    });
   }
 
   function coverData() {
@@ -1713,24 +1738,20 @@ function openNoteComposer(domains, onSaved) {
     scope.className = `nt-scope nt-${state.theme}`;
     viewer?.destroy();
     const text = val('text').value;
-    viewer = mountNote($('#previewRoot', root), coverData(), { preview: { format: state.format, text: text || '（这里会显示你写的内容）' } });
+    viewer = mountNote($('#previewRoot', root), coverData(), { preview: { text: text || '（这里会显示你写的内容）' } });
   }
-  const repaint = debounce(paintPreview, 250);
+  const repaint = debounce(paintPreview, 200);
 
   function paintMode() {
-    $('#modeDesc', root).textContent = NOTE_MODES.find((x) => x.id === state.mode)?.desc || '';
+    $('#modeDesc', root).textContent = SECURE_MODES.find((x) => x.id === state.mode)?.desc || '';
     $('#modeOpts', root).innerHTML = modeOptsHtml();
+    paintSliderOuts();
   }
   function paintEnc() {
     const hint = $('#encHint', root);
     if (hint) hint.textContent = state.enc === 'e2e' ? '解密密钥只放在链接 # 后面，服务器和管理员都看不到内容。链接丢了就无法找回。' : '内容加密保存在服务器上，管理员可以查看。适合需要事后核对的场景。';
   }
 
-  $$('[data-fmt]', root).forEach((b) => b.addEventListener('click', () => {
-    state.format = b.dataset.fmt;
-    $$('[data-fmt]', root).forEach((x) => x.classList.toggle('on', x === b));
-    repaint();
-  }));
   $$('[data-theme-pick]', root).forEach((b) => b.addEventListener('click', () => {
     state.theme = b.dataset.themePick;
     $$('[data-theme-pick]', root).forEach((x) => x.classList.toggle('on', x === b));
@@ -1750,7 +1771,7 @@ function openNoteComposer(domains, onSaved) {
   }));
   val('after').addEventListener('change', (e) => {
     const v = e.target.value;
-    $('#afterBox', root).hidden = v === 'burned';
+    $('#afterBox', root).hidden = v === 'quiet';
     $('#afterLabel', root).textContent = v === 'redirect' ? '跳转地址' : '结束语';
     val('after_value').placeholder = v === 'redirect' ? 'https://' : '例如：看完记得回我';
   });
@@ -1762,6 +1783,7 @@ function openNoteComposer(domains, onSaved) {
       const n = new TextEncoder().encode(e.target.value).length;
       $('#nBytes', root).textContent = n < 1024 ? `${n} 字节` : `${(n / 1024).toFixed(1)} KB`;
     }
+    if (e.target.type === 'range') paintSliderOuts();
     repaint();
   });
   root.querySelector('.composer-form').addEventListener('change', repaint);
@@ -1803,12 +1825,12 @@ function openNoteComposer(domains, onSaved) {
     try {
       let key = null;
       if (state.enc === 'e2e') {
-        const sealed = await encryptNote({ format: state.format, text });
+        const sealed = await encryptNote({ text });
         body.cipher = sealed.cipher;
         body.kcv = sealed.kcv;
         key = sealed.key;
       } else {
-        body.payload = { format: state.format, text };
+        body.payload = { text };
       }
       const { item } = await api('/api/notes', { method: 'POST', body });
       const url = key ? `${item.url}#k=${key}` : item.url;

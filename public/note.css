@@ -18,25 +18,25 @@
 .nt-min {
   --nt-bg: #f4f4f5; --nt-card: #ffffff; --nt-border: #e4e4e7; --nt-text: #18181b; --nt-muted: #71717a;
   --nt-accent: #2563eb; --nt-on-accent: #fff; --nt-soft: rgba(37, 99, 235, 0.08); --nt-warn-bg: #fdf3e2; --nt-warn: #9a5b00;
-  --nt-shadow: 0 12px 40px rgba(16, 16, 20, 0.08);
+  --nt-shadow: 0 12px 40px rgba(16, 16, 20, 0.08); --sx-dark: 0;
 }
 @media (prefers-color-scheme: dark) {
   .nt-min {
     --nt-bg: #0c0c0e; --nt-card: #17171a; --nt-border: #2a2a2f; --nt-text: #f4f4f5; --nt-muted: #8b8b94;
     --nt-accent: #3b82f6; --nt-soft: rgba(59, 130, 246, 0.14); --nt-warn-bg: rgba(245, 165, 36, 0.12); --nt-warn: #f5c26b;
-    --nt-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    --nt-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); --sx-dark: 1;
   }
 }
 .nt-letter {
   --nt-bg: #e9dfca; --nt-card: #f6eedd; --nt-border: #d9c9a8; --nt-text: #3b2f22; --nt-muted: #7b6a52;
   --nt-accent: #8a2b1f; --nt-on-accent: #f8f0e0; --nt-soft: rgba(138, 43, 31, 0.08); --nt-warn-bg: rgba(138, 43, 31, 0.08); --nt-warn: #8a2b1f;
-  --nt-shadow: 0 14px 34px rgba(80, 55, 20, 0.18);
+  --nt-shadow: 0 14px 34px rgba(80, 55, 20, 0.18); --sx-dark: 0;
 }
 .nt-letter .nt-card { font-family: var(--nt-serif); background-image: repeating-linear-gradient(transparent 0 31px, rgba(120, 90, 50, 0.14) 31px 32px); background-position: 0 14px; }
 .nt-letter .nt-content { font-size: 17px; line-height: 2; }
 .nt-term {
   --nt-bg: #070a08; --nt-card: #0b0f0c; --nt-border: #1d2e21; --nt-text: #7ee787; --nt-muted: #4f8a55;
-  --nt-accent: #7ee787; --nt-on-accent: #07120a; --nt-soft: rgba(126, 231, 135, 0.08); --nt-warn-bg: rgba(126, 231, 135, 0.07); --nt-warn: #b3f0b9;
+  --nt-accent: #7ee787; --nt-on-accent: #07120a; --nt-soft: rgba(126, 231, 135, 0.08); --nt-warn-bg: rgba(126, 231, 135, 0.07); --nt-warn: #b3f0b9; --sx-dark: 1;
   --nt-shadow: 0 0 0 1px #1d2e21, 0 20px 50px rgba(0, 0, 0, 0.6);
 }
 .nt-term .nt-card { font-family: var(--nt-mono); border-radius: 6px; }
@@ -45,7 +45,7 @@
 .nt-term .nt-content { font-size: 14.5px; }
 .nt-noir {
   --nt-bg: #09090b; --nt-card: #121215; --nt-border: #26252a; --nt-text: #e9e6df; --nt-muted: #8d877c;
-  --nt-accent: #c29a5f; --nt-on-accent: #0d0d10; --nt-soft: rgba(194, 154, 95, 0.1); --nt-warn-bg: rgba(194, 154, 95, 0.1); --nt-warn: #e2c18e;
+  --nt-accent: #c29a5f; --nt-on-accent: #0d0d10; --nt-soft: rgba(194, 154, 95, 0.1); --nt-warn-bg: rgba(194, 154, 95, 0.1); --nt-warn: #e2c18e; --sx-dark: 1;
   --nt-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
 }
 .nt-noir .nt-title { font-family: var(--nt-serif); letter-spacing: 0.04em; font-weight: 600; }
@@ -130,3 +130,32 @@
 @media (prefers-reduced-motion: reduce) {
   .nt-caret::after, .nt-spin { animation: none; }
 }
+
+/* ---------- secure canvas renderer ---------- */
+.nt-noselect, .sx-host, .sx-canvas {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.nt-stage { display: flex; flex-direction: column; gap: 14px; }
+.nt-view { position: relative; width: 100%; border-radius: 10px; overflow: hidden; background: var(--nt-soft); min-height: 72px; }
+.nt-view.nt-holdable { cursor: pointer; }
+.sx-host { position: relative; display: block; width: 100%; line-height: 0; }
+.sx-canvas { display: block; width: 100%; image-rendering: pixelated; }
+.sx-host.sx-veiled .sx-canvas { filter: blur(10px); opacity: 0.4; }
+.nt-veil {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  text-align: center; padding: 16px; font-size: 13px; color: var(--nt-muted);
+  background: color-mix(in srgb, var(--nt-card) 72%, transparent); border-radius: 10px; pointer-events: none;
+}
+.nt-stage:has(.sx-host.sx-veiled) .nt-veil { display: flex; }
+.nt-holdable::after {
+  content: '按住查看'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 600; color: var(--nt-muted); background: var(--nt-soft);
+  border: 1px dashed var(--nt-border); border-radius: 10px; letter-spacing: 0.02em;
+}
+.nt-holdable.sx-holding::after { display: none; }
+
+.nt-end { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 22px 8px 8px; }
+.nt-end-mark { width: 44px; height: 44px; color: var(--nt-accent); opacity: 0.9; }
+.nt-end-mark svg { width: 100%; height: 100%; }
+.nt-end b { font-size: 17px; font-weight: 650; }
+.nt-end span { color: var(--nt-muted); font-size: 13.5px; line-height: 1.6; max-width: 34ch; }
