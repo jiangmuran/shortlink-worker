@@ -684,7 +684,7 @@ export function registerAdminRoutes(r) {
     '/api/admin/cleanup',
     async (ctx) => {
       const result = await runMaintenance(ctx.env);
-      audit(ctx, 'maintenance.run', { detail: result });
+      audit(ctx, 'maintenance.run', { detail: `汇总 ${result.rolled_days} 条日统计 · 焚毁 ${result.notes_burned} 封密信 · 删除 ${result.logs_deleted} 条记录、${result.links_deleted} 条过期短链` });
       return ok(result);
     },
     { auth: 'admin', perm: 'settings' }

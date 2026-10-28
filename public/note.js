@@ -199,7 +199,7 @@ export function mountNote(root, data, opts = {}) {
   let attemptsLeft = data.attempts_left ?? null;
 
   const from = meta.from || '';
-  const avatar = (from || data.site || '密').trim().charAt(0).toUpperCase();
+  const avatar = from ? from.trim().charAt(0).toUpperCase() : '✉';
   const accent = data.theme?.accent ? ` style="--nt-accent:${esc(data.theme.accent)}"` : '';
   root.innerHTML = `
     <div class="nt-card"${accent}>

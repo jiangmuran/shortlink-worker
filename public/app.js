@@ -2,6 +2,8 @@
    ShortLink console SPA — vanilla JS, no dependencies
    ============================================================ */
 
+import { NOTE_THEMES, NOTE_MODES, encryptNote, mountNote, renderMarkdown, fmtDuration } from '/note.js';
+
 /* ---------------- tiny helpers ---------------- */
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -104,6 +106,12 @@ const I = (() => {
     terminal: wrap('<path d="m5 7 5 5-5 5M13 17h6"/>'),
     arrowLeft: wrap('<path d="M19 12H5M12 19l-7-7 7-7"/>'),
     chevRight: wrap('<path d="m9 6 6 6-6 6"/>'),
+    people: wrap('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3c2.1.7 3.5 2.8 3.5 5.7"/>'),
+    ticket: wrap('<path d="M3 8a2 2 0 0 0 2-2h14a2 2 0 0 0 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 0-2 2H5a2 2 0 0 0-2-2v-2a2 2 0 0 0 0-4z"/><path d="M13 6v12" stroke-dasharray="2 2"/>'),
+    scroll: wrap('<path d="M8 21h11a2 2 0 0 0 2-2v-1H10v1a2 2 0 0 1-4 0V5a2 2 0 0 0-2-2h12a2 2 0 0 1 2 2v13"/><path d="M10 8h5M10 12h5"/>'),
+    flame: wrap('<path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.8 1 2.8 2 3.3-.5-3 .3-6.3 1-8.8z"/>'),
+    lock: wrap('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
+    snow: wrap('<path d="M12 2v20M4.9 6.5l14.2 11M19.1 6.5 4.9 17.5"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2"/>'),
     inbox: wrap('<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.4 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.4-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.1z"/>'),
   };
 })();
@@ -126,6 +134,10 @@ async function api(path, { method = 'GET', body, raw = false } = {}) {
     data = await res.json();
   } catch {}
   if (!res.ok || !data?.ok) {
+    if (res.status === 403 && data?.error?.code === 'password_change_required' && me) {
+      me.must_change_password = true;
+      render();
+    }
     if (res.status === 401 && !path.startsWith('/api/auth') && me) {
       // session expired — back to the login screen
       me = null;
@@ -160,11 +172,11 @@ function toast(msg, type = 'ok') {
 
 let modalStack = [];
 
-function openModal({ title, body, footer, wide, onClose }) {
+function openModal({ title, body, footer, wide, xwide, onClose }) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
-    <div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    <div class="modal${xwide ? ' xwide' : wide ? ' wide' : ''}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="modal-head">
         <h2>${esc(title)}</h2>
         <button class="icon-btn" data-close aria-label="关闭">${I.x}</button>
@@ -272,17 +284,40 @@ document.addEventListener('click', (e) => {
 });
 window.addEventListener('popstate', render);
 
+// what the signed-in account may see/do (mirrors src/caps.js on the server)
+const can = {
+  users: () => !!me?.admin_perms?.users,
+  domains: () => !!me?.admin_perms?.domains,
+  settings: () => !!me?.admin_perms?.settings,
+  content: () => !!me?.admin_perms?.content,
+  anyAdmin: () => Object.values(me?.admin_perms || {}).some(Boolean),
+  links: () => !!me?.caps?.links?.create,
+  notes: () => !!me?.caps?.notes?.create || can.content(),
+  logs: () => !!me?.caps?.logs?.view,
+  api: () => !!me?.caps?.api?.use || can.users(),
+};
+
+function roleLabel(u) {
+  if (u.is_owner) return '所有者';
+  if (u.role === 'admin') return '管理员';
+  return u.group?.name || '成员';
+}
+
 const NAV = [
-  { path: '/', label: '概览', icon: 'house', key: 'dashboard' },
-  { path: '/links', label: '短链接', icon: 'link', key: 'links' },
-  { path: '/domains', label: '域名', icon: 'globe', key: 'domains' },
-  { path: '/logs', label: '访问记录', icon: 'clock', key: 'logs', admin: true },
-  { section: '管理', admin: true },
-  { path: '/users', label: '用户', icon: 'person', key: 'users', admin: true },
-  { path: '/settings', label: '设置', icon: 'gear', key: 'settings', admin: true },
-  { section: '开发者' },
-  { path: '/keys', label: 'API 密钥', icon: 'key', key: 'keys' },
-  { path: '/docs', label: 'API 文档', icon: 'doc', external: true },
+  { path: '/', label: '概览', icon: 'house' },
+  { path: '/links', label: '短链接', icon: 'link' },
+  { path: '/notes', label: '密信', icon: 'flame', show: () => can.notes() },
+  { path: '/domains', label: '域名', icon: 'globe' },
+  { path: '/logs', label: '访问记录', icon: 'clock', show: () => can.content() },
+  { section: '管理', show: () => can.users() || can.settings() },
+  { path: '/users', label: '用户', icon: 'person', show: () => can.users() },
+  { path: '/groups', label: '用户组', icon: 'people', show: () => can.users() },
+  { path: '/access', label: '邀请与登录链接', icon: 'ticket', show: () => can.users() },
+  { path: '/audit', label: '操作日志', icon: 'scroll', show: () => can.users() },
+  { path: '/settings', label: '设置', icon: 'gear', show: () => can.settings() },
+  { section: '开发者', show: () => can.api() },
+  { path: '/keys', label: 'API 密钥', icon: 'key', show: () => can.api() },
+  { path: '/docs', label: 'API 文档', icon: 'doc', external: true, show: () => can.api() },
 ];
 
 function currentPath() {
@@ -293,13 +328,22 @@ function currentPath() {
 async function render() {
   const app = $('#app');
   const path = currentPath();
+  const tokenMatch = path.match(/^\/(invite|login)\/([A-Za-z0-9_-]+)$/);
+  if (tokenMatch) {
+    await renderTokenPage(app, tokenMatch[1], tokenMatch[2]);
+    return;
+  }
   if (!me) {
     await renderAuth(app);
     return;
   }
+  if (me.must_change_password) {
+    renderPasswordGate(app);
+    return;
+  }
   const page = routes[path] || routes['/'];
   if (!page) return;
-  if (page.adminOnly && me.role !== 'admin') {
+  if (page.need && !page.need()) {
     route('/');
     return;
   }
@@ -316,7 +360,7 @@ async function render() {
           <div class="user-chip">
             <a class="who-link${path === '/profile' ? ' on' : ''}" href="/profile" data-nav title="个人设置">
               <div class="avatar">${esc((me.display_name || me.username)[0].toUpperCase())}</div>
-              <div class="who"><b>${esc(me.display_name || me.username)}</b><span>${me.role === 'admin' ? '管理员' : '成员'}</span></div>
+              <div class="who"><b>${esc(me.display_name || me.username)}</b><span>${esc(roleLabel(me))}</span></div>
             </a>
             <button class="icon-btn" id="logoutBtn" title="退出登录" aria-label="退出登录">${I.logout}</button>
           </div>
@@ -337,9 +381,8 @@ async function render() {
 
   // nav
   const nav = $('#nav');
-  const admin = me.role === 'admin';
   nav.innerHTML = NAV.map((item) => {
-    if (item.admin && !admin) return '';
+    if (item.show && !item.show()) return '';
     if (item.section) return `<div class="nav-section">${item.section}</div>`;
     if (item.external) return `<a class="nav-item" href="${item.path}" target="_blank" rel="noopener">${I[item.icon]}<span>${item.label}</span>${I.external.replace('<svg', '<svg class="ext"')}</a>`;
     const on = path === item.path || (item.path !== '/' && path.startsWith(item.path));
@@ -387,6 +430,121 @@ async function render() {
   if (page.narrow) content.classList.add('narrow');
   window.scrollTo(0, 0);
   page.render(content, $('#topActions'));
+}
+
+/* ---------------- invite / login-link / forced password screens ---------------- */
+
+function authShell(inner) {
+  return `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-head">
+          <div class="mark lg">${I.link}</div>
+          ${inner.head}
+        </div>
+        ${inner.body}
+      </div>
+      <p class="auth-foot">${esc(bootstrap?.site_name || 'ShortLink')}</p>
+    </div>`;
+}
+
+async function renderTokenPage(app, kind, token) {
+  const infoPath = kind === 'invite' ? `/api/invite/${token}` : `/api/login-link/${token}`;
+  let info;
+  try {
+    info = await api(infoPath);
+  } catch (err) {
+    app.innerHTML = authShell({
+      head: `<div class="auth-title">链接已失效</div><div class="auth-sub">${esc(err.message)}</div>`,
+      body: `<a class="btn btn-secondary btn-lg btn-block" href="/" data-nav>返回登录页</a>`,
+    });
+    return;
+  }
+  const switching = me ? `<div class="alert warn" style="margin-bottom:16px">${I.alert}<div>你当前以 <b>${esc(me.username)}</b> 登录，继续后会切换到新账户。</div></div>` : '';
+  if (kind === 'login') {
+    app.innerHTML = authShell({
+      head: `<div class="auth-title">登录到 ${esc(info.site_name)}</div><div class="auth-sub">这个链接会让你以下面的身份登录</div>`,
+      body: `${switching}
+        <div class="token-who"><div class="avatar">${esc((info.display_name || info.username)[0].toUpperCase())}</div><div><b>${esc(info.display_name)}</b><span>${esc(info.username)}</span></div></div>
+        <div class="field-error" id="tkErr" hidden></div>
+        <button class="btn btn-primary btn-lg btn-block" id="tkGo" style="margin-top:18px">以 ${esc(info.username)} 登录</button>
+        <p class="auth-foot" style="margin-top:14px">${info.expires_at ? `链接 ${fmtDate(info.expires_at)} 前有效` : '链接长期有效'}${info.uses_left !== null ? ` · 还能使用 ${info.uses_left} 次` : ''}</p>`,
+    });
+    $('#tkGo').addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        await api(`/api/login-link/${token}`, { method: 'POST', body: {} });
+        await loadMe();
+        history.replaceState(null, '', '/');
+        render();
+      } catch (err) {
+        $('#tkErr').textContent = err.message;
+        $('#tkErr').hidden = false;
+        e.currentTarget.disabled = false;
+      }
+    });
+    return;
+  }
+  app.innerHTML = authShell({
+    head: `<div class="auth-title">加入 ${esc(info.site_name)}</div><div class="auth-sub">${info.label ? esc(info.label) + ' · ' : ''}创建你的账户${info.group ? `（${esc(info.group)}）` : ''}</div>`,
+    body: `${switching}
+      <form id="invForm" novalidate>
+        <div class="field"><label>用户名</label><input class="input" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="2-32 位字母、数字或 _ . -"></div>
+        <div class="field"><label>显示名称 <span class="opt">可选</span></label><input class="input" name="display_name" maxlength="60"></div>
+        <div class="field"><label>密码</label><input class="input" type="password" name="password" autocomplete="new-password" placeholder="至少 8 位"></div>
+        <div class="field-error" id="tkErr" hidden></div>
+        <button class="btn btn-primary btn-lg btn-block" style="margin-top:20px">创建账户</button>
+      </form>
+      ${info.account_days ? `<p class="auth-foot" style="margin-top:14px">账户有效期 ${info.account_days} 天</p>` : ''}`,
+  });
+  $('#invForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api(`/api/invite/${token}`, {
+        method: 'POST',
+        body: { username: fd.get('username').trim(), display_name: fd.get('display_name').trim(), password: fd.get('password') },
+      });
+      await loadMe();
+      history.replaceState(null, '', '/');
+      render();
+    } catch (err) {
+      $('#tkErr').textContent = err.message;
+      $('#tkErr').hidden = false;
+    }
+  });
+}
+
+function renderPasswordGate(app) {
+  app.innerHTML = authShell({
+    head: `<div class="auth-title">设置新密码</div><div class="auth-sub">管理员要求你在首次登录时修改初始密码</div>`,
+    body: `
+      <form id="pgForm" novalidate>
+        <div class="field"><label>初始密码</label><input class="input" type="password" name="current" autocomplete="current-password"></div>
+        <div class="field"><label>新密码</label><input class="input" type="password" name="next" autocomplete="new-password" placeholder="至少 8 位"></div>
+        <div class="field-error" id="pgErr" hidden></div>
+        <button class="btn btn-primary btn-lg btn-block" style="margin-top:20px">保存并继续</button>
+      </form>
+      <button class="btn btn-ghost btn-block" id="pgOut" style="margin-top:8px">退出登录</button>`,
+  });
+  $('#pgForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api('/api/me/password', { method: 'POST', body: { current: fd.get('current'), next: fd.get('next') } });
+      await loadMe();
+      toast('密码已更新');
+      render();
+    } catch (err) {
+      $('#pgErr').textContent = err.message;
+      $('#pgErr').hidden = false;
+    }
+  });
+  $('#pgOut').addEventListener('click', async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    me = null;
+    route('/');
+  });
 }
 
 /* ---------------- auth screens ---------------- */
@@ -593,7 +751,7 @@ routes['/'] = {
         <div class="stat-tile"><div class="label">${I.link} 短链接</div><div class="value" id="stLinks">–</div><div class="delta" id="stLinksSub">&nbsp;</div></div>
         <div class="stat-tile"><div class="label">${I.bolt} 今日点击</div><div class="value" id="stToday">–</div><div class="delta">自 00:00 起</div></div>
         <div class="stat-tile"><div class="label">${I.chart} 近 7 日点击</div><div class="value" id="stWeek">–</div><div class="delta" id="stWeekSub">&nbsp;</div></div>
-        <div class="stat-tile"><div class="label">${I.globe} 短链域名</div><div class="value" id="stDomains">–</div><div class="delta">${me.role === 'admin' ? '全部已绑定域名' : '可使用的域名'}</div></div>
+        <div class="stat-tile"><div class="label">${I.globe} 短链域名</div><div class="value" id="stDomains">–</div><div class="delta">${can.content() ? '全部已绑定域名' : '可使用的域名'}</div></div>
       </div>
       <div class="card">
         <div class="card-head"><h3>近 14 日点击</h3><div class="right" id="chartSum"></div></div>
@@ -622,7 +780,7 @@ routes['/'] = {
     $('#stWeek').textContent = fmtNum(data.clicks_7d);
     $('#stWeekSub').textContent = `近 30 日 ${fmtNum(data.clicks_30d)} 次`;
     $('#stDomains').textContent = fmtNum(data.domains_total);
-    $('#stLinksSub').textContent = data.scope === 'own' ? '我创建的短链' : `全部用户 · 共 ${fmtNum(data.users_total)} 位用户`;
+    $('#stLinksSub').textContent = [data.scope === 'own' ? '我创建的' : `全部 ${fmtNum(data.users_total)} 位用户`, data.notes_total ? `另有 ${fmtNum(data.notes_total)} 封密信` : null].filter(Boolean).join(' · ');
 
     renderChart($('#chartBox'), data.series);
     const top = $('#topLinks');
@@ -632,7 +790,7 @@ routes['/'] = {
             (t, i) => `
         <div class="hlist-item">
           <div class="rank">${i + 1}</div>
-          <div class="grow"><div class="t1 mono"><a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.hostname)}/${esc(t.code)}</a></div>
+          <div class="grow"><div class="t1 mono">${t.kind === 'note' ? `${esc(t.hostname)}/${esc(t.code)} <span class="badge badge-orange">密信</span>` : `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.hostname)}/${esc(t.code)}</a>`}</div>
           <div class="t2">累计 ${fmtNum(t.click_count)} 次点击</div></div>
           <div class="metric">${fmtNum(t.clicks_7d)}<small>次点击</small></div>
         </div>`
@@ -647,7 +805,7 @@ routes['/'] = {
             const ua = parseUA(r.ua);
             return `
         <div class="hlist-item">
-          <div class="grow"><div class="t1 mono">${esc(r.hostname)}/${esc(r.code)}</div>
+          <div class="grow"><div class="t1 mono">${esc(r.hostname)}/${esc(r.code)}${r.kind === 'note' ? ' <span class="badge badge-orange">密信</span>' : ''}</div>
           <div class="t2">${ua.browser} · ${ua.os} · ${esc(r.country || '未知地区')}${r.ip ? ' · ' + esc(r.ip) : ''}</div></div>
           <div class="side">${fmtRelative(r.ts)}</div>
         </div>`;
@@ -713,8 +871,8 @@ routes['/links'] = {
   title: '短链接',
   key: 'links',
   async render(content, topActions) {
-    const canCreate = me.role === 'admin' || me.perms?.create_links;
-    const admin = me.role === 'admin';
+    const canCreate = can.links();
+    const admin = can.content();
     topActions.innerHTML = canCreate
       ? `<button class="btn btn-primary" id="newLinkBtn">${I.plus} 新建短链</button>`
       : '';
@@ -811,7 +969,7 @@ routes['/links'] = {
         ${pagerHtml(data.page, data.per_page, data.total)}`;
 
       const byId = new Map(data.items.map((l) => [String(l.id), l]));
-      const canViewLog = admin || me.perms?.view_logs;
+      const canViewLog = can.logs();
       $$('[data-edit]', box).forEach((b) => b.addEventListener('click', () => openLinkEditor(byId.get(b.dataset.edit), domains, loadList)));
       $$('[data-menu]', box).forEach((b) =>
         b.addEventListener('click', () => {
@@ -868,9 +1026,11 @@ const MODES = [
   { value: 'confirm', label: '确认页', hint: '访客确认目的地后手动继续' },
 ];
 
-function modeSegHtml(mode) {
-  return `<div class="seg block">${MODES.map((m) => `<button type="button" class="${mode === m.value ? 'on' : ''}" data-mode="${m.value}">${m.label}</button>`).join('')}</div>
-    <div class="field-hint" data-mode-hint>${MODES.find((m) => m.value === mode)?.hint || ''}</div>`;
+function modeSegHtml(mode, allowed = MODES.map((m) => m.value)) {
+  const list = MODES.filter((m) => allowed.includes(m.value));
+  const only = list.length === 1 ? `<div class="field-hint">当前账户只能使用「${list[0].label}」</div>` : '';
+  return `<div class="seg block">${list.map((m) => `<button type="button" class="${mode === m.value ? 'on' : ''}" data-mode="${m.value}">${m.label}</button>`).join('')}</div>
+    <div class="field-hint" data-mode-hint>${MODES.find((m) => m.value === mode)?.hint || ''}</div>${only}`;
 }
 
 function styleEditorHtml(mode, style) {
@@ -950,6 +1110,14 @@ function openLinkEditor(link, domains, onSaved) {
   // apply domain default prefill for new links
   if (isNew && domains[0]?.defaults?.mode) d.mode = domains[0].defaults.mode;
   if (isNew && domains[0]?.defaults?.style) d.style = { ...domains[0].defaults.style };
+  const lc = me.caps?.links || {};
+  const allowedModes = lc.modes?.length ? lc.modes : MODES.map((x) => x.value);
+  if (!allowedModes.includes(d.mode)) d.mode = allowedModes[0];
+  const customOk = lc.custom_code !== false;
+  const minLen = lc.min_code_len || 1;
+  const targetLocked = !isNew && lc.edit_target === false;
+  const lengths = [4, 5, 6, 7, 8, 10].filter((n) => n >= Math.min(minLen, 10));
+  if (!lengths.includes(d.random_length)) d.random_length = lengths[0];
 
   const m = openModal({
     title: isNew ? '新建短链' : `编辑 ${link.code}`,
@@ -958,7 +1126,8 @@ function openLinkEditor(link, domains, onSaved) {
       <form id="linkForm" novalidate>
         <div class="form-section">
           <div class="field"><label>目标链接</label>
-            <input class="input" name="target" type="url" required placeholder="https://example.com/very/long/url" value="${esc(d.target)}">
+            <input class="input" name="target" type="url" required placeholder="https://example.com/very/long/url" value="${esc(d.target)}" ${targetLocked ? 'disabled' : ''}>
+            ${targetLocked ? '<div class="field-hint">当前账户创建后不能修改目标链接</div>' : ''}
           </div>
           <div class="field"><label>短链地址</label>
             <div class="joined">
@@ -966,10 +1135,10 @@ function openLinkEditor(link, domains, onSaved) {
                 ${domains.map((dm) => `<option value="${dm.id}" ${d.domain_id === dm.id || d.domain?.id === dm.id ? 'selected' : ''}>${esc(dm.hostname)}</option>`).join('')}
               </select>
               <span class="sep">/</span>
-              <input class="input mono" name="code" value="${esc(d.code || '')}" placeholder="留空自动生成" maxlength="64" autocapitalize="off" spellcheck="false" aria-label="后缀">
-              <button type="button" class="icon-btn" id="rollBtn" title="随机生成" aria-label="随机生成">${I.refresh}</button>
+              <input class="input mono" name="code" value="${esc(d.code || '')}" placeholder="${customOk ? '留空自动生成' : '自动生成'}" maxlength="64" autocapitalize="off" spellcheck="false" aria-label="后缀" ${customOk ? '' : 'disabled'}>
+              ${customOk ? `<button type="button" class="icon-btn" id="rollBtn" title="随机生成" aria-label="随机生成">${I.refresh}</button>` : ''}
             </div>
-            <div class="field-hint" id="codeHint">${isNew ? '留空将自动生成随机后缀；自定义支持字母、数字、下划线和连字符' : '支持字母、数字、下划线、连字符'}</div>
+            <div class="field-hint" id="codeHint">${!customOk ? `当前账户只能使用随机后缀（至少 ${minLen} 位）` : isNew ? `留空将自动生成随机后缀；自定义支持字母、数字、下划线和连字符${minLen > 1 ? `，至少 ${minLen} 位` : ''}` : '支持字母、数字、下划线、连字符'}</div>
           </div>
           <div class="form-grid">
             <div class="field"><label>备注 <span class="opt">可选</span></label><input class="input" name="note" value="${esc(d.note || '')}" maxlength="200" placeholder="这条链接的用途"></div>
@@ -978,12 +1147,12 @@ function openLinkEditor(link, domains, onSaved) {
             </div>
           </div>
           ${isNew ? `<div class="field"><label>随机后缀长度</label>
-            <select class="select" name="random_length" style="max-width:160px">${[4, 5, 6, 7, 8, 10].map((n) => `<option value="${n}" ${n === (d.random_length || 6) ? 'selected' : ''}>${n} 位</option>`).join('')}</select>
+            <select class="select" name="random_length" style="max-width:160px">${lengths.map((n) => `<option value="${n}" ${n === (d.random_length || 6) ? 'selected' : ''}>${n} 位</option>`).join('')}</select>
           </div>` : ''}
         </div>
         <div class="form-section">
           <div class="form-section-title">跳转方式</div>
-          ${modeSegHtml(d.mode)}
+          ${modeSegHtml(d.mode, allowedModes)}
           <div class="subpanel" id="styleBox">${styleEditorHtml(d.mode, d.style)}</div>
         </div>
         <div class="field-error" id="linkErr" hidden></div>
@@ -1015,11 +1184,12 @@ function openLinkEditor(link, domains, onSaved) {
     try {
       const r = await api(`/api/code-check?domain_id=${domainId}&code=${encodeURIComponent(code)}`);
       if (r.reason === 'taken') setHint('该后缀已被使用', 'var(--red)');
-      else if (r.reason === 'invalid' || r.reason === 'reserved') setHint('后缀不可用', 'var(--red)');
+      else if (r.reason === 'too_short') setHint(`后缀至少需要 ${r.min} 位`, 'var(--red)');
+      else if (r.reason === 'invalid' || r.reason === 'reserved' || r.reason === 'forbidden') setHint('后缀不可用', 'var(--red)');
       else setHint('后缀可用', 'var(--green)');
     } catch {}
   }, 400);
-  $('#rollBtn', root).addEventListener('click', () => {
+  $('#rollBtn', root)?.addEventListener('click', () => {
     codeInput.value = roll();
     checkCode();
   });
@@ -1040,7 +1210,8 @@ function openLinkEditor(link, domains, onSaved) {
       random_length: lenOf(),
     };
     const code = codeInput.value.trim();
-    if (code) body.code = code;
+    if (code && customOk) body.code = code;
+    if (targetLocked) delete body.target;
     try {
       if (isNew) {
         const created = await api('/api/links', { method: 'POST', body });
@@ -1091,10 +1262,26 @@ function logRowsHtml(items, withLink) {
         <td class="nowrap clean">${esc(g.country || '—')}${g.city ? ' · ' + esc(g.city) : ''}</td>
         <td class="nowrap clean">${ua.browser} / ${ua.os}</td>
         <td data-th="来源" class="dim hide-md"><div class="truncate" style="max-width:160px" title="${esc(g.referer || '')}">${esc(ref)}</div></td>
-        ${withLink ? '' : `<td class="clean">${g.status === 'hit' ? '<span class="status ok">已跳转</span>' : `<span class="status warn">${g.status === 'expired' ? '已过期' : '已停用'}</span>`}</td>`}
+        <td class="clean">${logStatusHtml(g.status)}</td>
       </tr>`;
     })
     .join('');
+}
+
+const LOG_STATUS = {
+  hit: ['ok', '已跳转'],
+  view: ['', '看了封面'],
+  opened: ['ok', '已打开'],
+  denied_password: ['warn', '密码错误'],
+  exhausted: ['warn', '次数用完'],
+  burned: ['', '已焚毁'],
+  expired: ['warn', '已过期'],
+  disabled: ['warn', '已停用'],
+};
+
+function logStatusHtml(status) {
+  const [cls, label] = LOG_STATUS[status] || ['', status || '—'];
+  return `<span class="status ${cls}">${label}</span>`;
 }
 
 function safeHost(u) {
@@ -1107,7 +1294,7 @@ function openLinkLogs(link) {
     title: `访问记录 · ${link.code}`,
     wide: true,
     body: `<div id="logBox"></div>`,
-    footer: `<a class="btn btn-secondary" href="/api/links/${link.id}/logs.csv" download style="margin-right:auto">${I.download} 导出 CSV</a><button class="btn btn-secondary" data-close>关闭</button>`,
+    footer: `<a class="btn btn-secondary" id="csvBtn" href="/api/links/${link.id}/logs.csv" download style="margin-right:auto" hidden>${I.download} 导出 CSV</a><span class="dim" id="ipNote" style="margin-right:auto;font-size:12.5px" hidden></span><button class="btn btn-secondary" data-close>关闭</button>`,
   });
   $('.modal-body', m.root).classList.add('flush');
   async function load() {
@@ -1120,8 +1307,12 @@ function openLinkLogs(link) {
       box.innerHTML = `<div style="padding:16px">${errorHtml(err)}</div>`;
       return;
     }
+    $('#csvBtn', m.root).hidden = !data.can_export;
+    const ipNote = $('#ipNote', m.root);
+    ipNote.hidden = data.can_export || data.ip_policy === 'full';
+    ipNote.textContent = data.ip_policy === 'masked' ? '访客 IP 已按账户设置打码' : data.ip_policy === 'none' ? '访客 IP 已按账户设置隐藏' : '';
     if (!data.items.length) {
-      box.innerHTML = emptyHtml('inbox', '暂无访问', '这个短链还没有被访问过');
+      box.innerHTML = emptyHtml('inbox', '暂无访问', link.kind === 'note' ? '这封密信还没有被打开过' : '这个短链还没有被访问过');
       return;
     }
     box.innerHTML = `
@@ -1139,13 +1330,524 @@ function openLinkLogs(link) {
   load();
 }
 
+/* ---------------- burn-after-reading notes ---------------- */
+
+const notesState = { q: '', status: '', page: 1 };
+const NOTE_KEYS = 'sl-note-links';
+const BURN_REASON = { exhausted: '次数用完', password: '密码错误过多', manual: '手动销毁', expired: '到期销毁' };
+
+// E2E links carry the key after "#", which the server never sees. Remember it in
+// this browser so the author can copy the full link again later.
+function rememberNoteUrl(id, url) {
+  try {
+    const m = JSON.parse(localStorage.getItem(NOTE_KEYS) || '{}');
+    m[id] = url;
+    localStorage.setItem(NOTE_KEYS, JSON.stringify(m));
+  } catch {}
+}
+function recalledNoteUrl(id) {
+  try {
+    return JSON.parse(localStorage.getItem(NOTE_KEYS) || '{}')[id] || null;
+  } catch {
+    return null;
+  }
+}
+
+function noteStatusHtml(n) {
+  switch (n.status) {
+    case 'pending':
+      return `<span class="status ok">待查看</span><div class="cell-sub">${n.max_opens ? `0 / ${n.max_opens} 次` : '不限次数'}</div>`;
+    case 'opened':
+      return `<span class="status ok">已打开</span><div class="cell-sub">${n.opens}${n.max_opens ? ` / ${n.max_opens}` : ''} 次</div>`;
+    case 'burned':
+      return `<span class="status">已焚毁</span><div class="cell-sub">${BURN_REASON[n.burn_reason] || ''}</div>`;
+    case 'expired':
+      return '<span class="status warn">已过期</span>';
+    default:
+      return '<span class="status warn">已停用</span>';
+  }
+}
+
+function noteLimitChips(n) {
+  const chips = [];
+  if (n.has_password) chips.push('密码');
+  if (n.open_ttl) chips.push(`打开后 ${fmtDuration(n.open_ttl)}`);
+  if (n.expires_at) chips.push(`${fmtDate(n.expires_at, false).slice(5)} 前`);
+  if (n.enc === 'server') chips.push('服务端加密');
+  if (n.display?.hide_on_blur) chips.push('切出即隐藏');
+  return `<div class="chip-row">${chips.map((c) => `<span class="badge badge-gray">${esc(c)}</span>`).join('') || '<span class="dim">—</span>'}</div>`;
+}
+
+routes['/notes'] = {
+  title: '密信',
+  key: 'notes',
+  need: () => can.notes(),
+  async render(content, topActions) {
+    const canCreate = !!me.caps?.notes?.create;
+    topActions.innerHTML = canCreate ? `<button class="btn btn-primary" id="newNoteBtn">${I.plus} 写密信</button>` : '';
+    let domains = [];
+    try {
+      domains = (await api('/api/domains')).items.filter((d) => d.can_use);
+    } catch {}
+    content.innerHTML = `
+      <div class="card">
+        <div class="toolbar">
+          <div class="search-box">${I.search}<input class="input" id="nq" placeholder="搜索后缀或备注" value="${esc(notesState.q)}"></div>
+          <div class="spacer"></div>
+          <div class="seg">
+            <button data-st="" class="${notesState.status === '' ? 'on' : ''}">全部</button>
+            <button data-st="live" class="${notesState.status === 'live' ? 'on' : ''}">进行中</button>
+            <button data-st="burned" class="${notesState.status === 'burned' ? 'on' : ''}">已焚毁</button>
+          </div>
+        </div>
+        <div id="notesList"></div>
+      </div>`;
+    $('#nq').addEventListener('input', debounce((e) => { notesState.q = e.target.value; notesState.page = 1; load(); }, 350));
+    $$('[data-st]', content).forEach((b) => b.addEventListener('click', () => {
+      notesState.status = b.dataset.st;
+      notesState.page = 1;
+      $$('[data-st]', content).forEach((x) => x.classList.toggle('on', x === b));
+      load();
+    }));
+    const openComposer = () => openNoteComposer(domains, load);
+    $('#newNoteBtn')?.addEventListener('click', openComposer);
+
+    async function load() {
+      const box = $('#notesList');
+      box.innerHTML = skeletonHtml(4);
+      const params = new URLSearchParams({ page: notesState.page });
+      if (notesState.q) params.set('q', notesState.q);
+      if (notesState.status) params.set('status', notesState.status);
+      let data;
+      try {
+        data = await api('/api/notes?' + params);
+      } catch (err) {
+        box.innerHTML = `<div style="padding:16px">${errorHtml(err)}</div>`;
+        return;
+      }
+      if (!data.items.length) {
+        const filtered = notesState.q || notesState.status;
+        box.innerHTML = emptyHtml(
+          'flame',
+          filtered ? '没有匹配的密信' : '还没有密信',
+          filtered ? '换个关键词或筛选条件试试' : '密信只能被查看有限次数，看完就从服务器删除',
+          canCreate && !filtered ? `<div><button class="btn btn-primary" id="emptyNote">${I.plus} 写第一封密信</button></div>` : ''
+        );
+        $('#emptyNote')?.addEventListener('click', openComposer);
+        return;
+      }
+      const modeLabel = (id) => NOTE_MODES.find((x) => x.id === id)?.label || id;
+      const themeLabel = (id) => NOTE_THEMES.find((x) => x.id === id)?.label || id;
+      box.innerHTML = `
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>密信</th><th>状态</th><th>限制</th><th class="hide-md">外观</th><th>创建</th><th class="w-actions"></th></tr></thead>
+          <tbody>${data.items.map((n) => `
+            <tr>
+              <td class="cell-main">
+                <span class="short-url"><span class="mono-num"><span class="dim">${esc(n.domain.hostname)}/</span>${esc(n.code)}</span></span>
+                <div class="cell-sub truncate">${esc(n.label || n.meta?.title || '（无备注）')}</div>
+              </td>
+              <td class="clean">${noteStatusHtml(n)}</td>
+              <td class="clean cell-block">${noteLimitChips(n)}</td>
+              <td class="dim hide-md nowrap">${esc(themeLabel(n.theme?.name || 'min'))} · ${esc(modeLabel(n.display?.mode || 'click'))}</td>
+              <td data-th="创建" class="nowrap dim">${fmtRelative(n.created_at)}${can.content() && n.owner && n.owner.id !== me.id ? `<div class="cell-sub">${esc(n.owner.username)}</div>` : ''}</td>
+              <td class="cell-actions"><div class="row-actions">
+                <button class="icon-btn" data-nlogs="${n.id}" title="打开记录" aria-label="打开记录">${I.clock}</button>
+                <button class="icon-btn" data-nmenu="${n.id}" title="更多" aria-label="更多">${I.dots}</button>
+              </div></td>
+            </tr>`).join('')}
+          </tbody></table></div>
+        ${pagerHtml(data.page, data.per_page, data.total)}`;
+      const byId = new Map(data.items.map((n) => [String(n.id), n]));
+      $$('[data-nlogs]', box).forEach((b) => b.addEventListener('click', () => openLinkLogs(byId.get(b.dataset.nlogs))));
+      $$('[data-nmenu]', box).forEach((b) => b.addEventListener('click', () => {
+        const n = byId.get(b.dataset.nmenu);
+        const live = n.status === 'pending' || n.status === 'opened' || n.status === 'disabled';
+        openMenu(b, [
+          ...(live ? [{ label: '复制链接', icon: I.copy, action: () => copyNoteLink(n) }] : []),
+          ...(n.enc === 'server' && n.status !== 'burned' ? [{ label: '查看内容', icon: I.eye, action: () => viewNoteContent(n) }] : []),
+          ...(live ? [{
+            label: n.enabled ? '停用' : '启用',
+            icon: n.enabled ? I.x : I.check,
+            action: async () => {
+              try {
+                await api(`/api/links/${n.id}`, { method: 'PATCH', body: { enabled: !n.enabled } });
+                toast(n.enabled ? '已停用' : '已启用');
+                load();
+              } catch (err) { toast(err.message, 'err'); }
+            },
+          }] : []),
+          '-',
+          ...(n.status !== 'burned' ? [{ label: '立即销毁', icon: I.flame, danger: true, action: async () => {
+            const ok = await confirmDialog({ title: '销毁密信', message: '销毁后内容立即从服务器删除，链接无法再打开。打开记录会保留。', okText: '销毁', danger: true });
+            if (!ok) return;
+            try {
+              await api(`/api/notes/${n.id}/burn`, { method: 'POST' });
+              toast('已销毁');
+              load();
+            } catch (err) { toast(err.message, 'err'); }
+          } }] : []),
+          { label: '删除', icon: I.trash, danger: true, action: async () => {
+            const ok = await confirmDialog({ title: '删除密信', message: '密信和它的打开记录都会被删除，此操作不可撤销。', okText: '删除', danger: true });
+            if (!ok) return;
+            try {
+              await api(`/api/notes/${n.id}`, { method: 'DELETE' });
+              toast('已删除');
+              load();
+            } catch (err) { toast(err.message, 'err'); }
+          } },
+        ]);
+      }));
+      $$('[data-page]', box).forEach((b) => b.addEventListener('click', () => { notesState.page = Number(b.dataset.page); load(); }));
+    }
+    load();
+  },
+};
+
+async function copyNoteLink(n) {
+  if (n.enc === 'server') return (await copyText(n.url)) && toast('已复制');
+  const full = recalledNoteUrl(n.id);
+  if (full) return (await copyText(full)) && toast('已复制完整链接');
+  openModal({
+    title: '无法复制完整链接',
+    body: `<p class="modal-text">这封密信是端到端加密的，解密密钥只在创建时显示过一次，服务器上没有保存。只有在创建它的那个浏览器里才能重新复制完整链接。</p>`,
+    footer: '<button class="btn btn-primary" data-close>知道了</button>',
+  });
+}
+
+async function viewNoteContent(n) {
+  const ok = await confirmDialog({
+    title: '查看密信内容',
+    message: n.owner?.id === me.id ? '查看不会消耗打开次数。' : '这封密信是其他用户创建的。查看操作会记录在操作日志里，不会消耗打开次数。',
+    okText: '查看',
+  });
+  if (!ok) return;
+  try {
+    const { payload } = await api(`/api/notes/${n.id}/content`);
+    openModal({
+      title: `密信内容 · ${n.code}`,
+      wide: true,
+      body: `<div class="note-content-view">${payload.format === 'markdown' ? renderMarkdown(payload.text) : `<div style="white-space:pre-wrap">${esc(payload.text)}</div>`}</div>`,
+      footer: '<button class="btn btn-secondary" data-close>关闭</button>',
+    });
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
+
+const TTL_CHOICES = [
+  [3600, '1 小时'],
+  [86400, '1 天'],
+  [7 * 86400, '7 天'],
+  [30 * 86400, '30 天'],
+  [0, '长期'],
+];
+
+function openNoteComposer(domains, onSaved) {
+  const nc = me.caps?.notes || {};
+  if (!domains.length) return toast('还没有可用的短链域名，请联系管理员', 'err');
+  const e2eAllowed = nc.e2e !== false;
+  const maxOpensCap = nc.max_opens || 0;
+  const ttlCap = (nc.max_ttl_hours || 0) * 3600;
+  const opensChoices = [1, 2, 3, 5, 10, 0].filter((n) => (maxOpensCap ? n > 0 && n <= maxOpensCap : true));
+  const ttlChoices = TTL_CHOICES.filter(([s]) => (ttlCap ? s > 0 && s <= ttlCap : true));
+  const customOk = me.caps?.links?.custom_code !== false;
+  const state = {
+    theme: 'min',
+    mode: 'click',
+    format: 'text',
+    enc: e2eAllowed ? 'e2e' : 'server',
+  };
+
+  const m = openModal({
+    title: '写密信',
+    xwide: true,
+    body: `
+      <div class="composer">
+        <form class="composer-form" novalidate>
+          <div class="form-section">
+            <div class="field">
+              <div class="label-row"><label for="nText">内容</label>
+                <div class="seg sm" id="fmtSeg"><button type="button" data-fmt="text" class="on">纯文本</button><button type="button" data-fmt="markdown">Markdown</button></div>
+              </div>
+              <textarea class="textarea" id="nText" name="text" rows="7" placeholder="写下只想让对方看一次的内容"></textarea>
+              <div class="field-hint"><span id="nBytes">0 字节</span> / ${nc.max_kb || 64} KB · 内容在${e2eAllowed ? '你的浏览器里加密后才上传' : '服务器上加密保存'}</div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">封面<span>打开前就能看到，也会出现在聊天软件的链接预览里，不要写敏感内容</span></div>
+            <div class="form-grid">
+              <div class="field"><label>标题</label><input class="input" name="title" maxlength="60" placeholder="你收到一封密信"></div>
+              <div class="field"><label>署名 <span class="opt">可选</span></label><input class="input" name="from" maxlength="40" placeholder="${esc(me.display_name || me.username)}"></div>
+            </div>
+            <div class="field"><label>提示语 <span class="opt">可选</span></label><input class="input" name="hint" maxlength="140" placeholder="例如：找个没人的地方再打开"></div>
+            <div class="field"><label>页面风格</label>
+              <div class="theme-picks">${NOTE_THEMES.map((t) => `<button type="button" class="theme-pick${t.id === state.theme ? ' on' : ''}" data-theme-pick="${t.id}"><i style="background:${t.swatch}"></i>${t.label}</button>`).join('')}</div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">显示方式</div>
+            <div class="seg block wrap" id="modeSeg">${NOTE_MODES.map((x) => `<button type="button" data-nmode="${x.id}" class="${x.id === state.mode ? 'on' : ''}">${x.label}</button>`).join('')}</div>
+            <div class="field-hint" id="modeDesc"></div>
+            <div class="subpanel" id="modeOpts"></div>
+            <div class="form-grid" style="margin-top:14px">
+              <div class="field"><label>读完之后</label>
+                <select class="select" name="after"><option value="burned">显示「已焚毁」</option><option value="message">显示一句结束语</option><option value="redirect">跳转到一个链接</option></select>
+              </div>
+              <div class="field" id="afterBox" hidden><label id="afterLabel">结束语</label><input class="input" name="after_value" maxlength="300"></div>
+            </div>
+            <label class="toggle-row"><div class="txt"><b>切出页面时隐藏内容</b><span>访客切到别的应用或标签页时内容自动模糊</span></div><span class="switch"><input type="checkbox" name="hide_on_blur"><i></i></span></label>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">访问限制</div>
+            <div class="form-grid">
+              <div class="field"><label>可查看次数</label>
+                <select class="select" name="max_opens">${opensChoices.map((n) => `<option value="${n}">${n ? `${n} 次` : '不限'}</option>`).join('')}</select>
+              </div>
+              <div class="field"><label>有效期</label>
+                <select class="select" name="ttl">${ttlChoices.map(([s, l]) => `<option value="${s}" ${s === 86400 ? 'selected' : ''}>${l}</option>`).join('')}</select>
+              </div>
+              <div class="field"><label>首次打开后</label>
+                <select class="select" name="open_ttl"><option value="">不额外限制</option><option value="300">5 分钟内有效</option><option value="3600">1 小时内有效</option><option value="86400">1 天内有效</option></select>
+              </div>
+              <div class="field"><label>访问密码 <span class="opt">可选</span></label><input class="input" name="password" type="text" autocomplete="off" placeholder="不设置"></div>
+            </div>
+            <div class="field" id="pwFailBox" hidden><label>密码错误</label>
+              <select class="select" name="pw_max_fail" style="max-width:240px"><option value="3">3 次后销毁</option><option value="5" selected>5 次后销毁</option><option value="10">10 次后销毁</option><option value="0">不限次数</option></select>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">链接</div>
+            <div class="field">
+              <div class="joined">
+                <select class="select" name="domain_id" aria-label="域名">${domains.map((d) => `<option value="${d.id}">${esc(d.hostname)}</option>`).join('')}</select>
+                <span class="sep">/</span>
+                <input class="input mono" name="code" placeholder="${customOk ? '留空随机生成' : '随机生成'}" maxlength="64" autocapitalize="off" spellcheck="false" aria-label="后缀" ${customOk ? '' : 'disabled'}>
+              </div>
+            </div>
+            <div class="field"><label>备注 <span class="opt">只有你能看到</span></label><input class="input" name="label" maxlength="200" placeholder="例如：门禁密码 · 发给小林"></div>
+            ${e2eAllowed ? `
+            <div class="field"><label>加密方式</label>
+              <div class="seg block" id="encSeg"><button type="button" data-enc="e2e" class="on">端到端加密</button><button type="button" data-enc="server">服务端加密</button></div>
+              <div class="field-hint" id="encHint"></div>
+            </div>` : `<div class="alert">${I.info}<div>当前账户的密信使用服务端加密：内容加密保存在服务器上，被举报时管理员可以查看。</div></div>`}
+          </div>
+          <div class="field-error" id="noteErr" hidden></div>
+        </form>
+        <aside class="composer-preview">
+          <div class="preview-label">访客看到的样子</div>
+          <div class="preview-phone"><div class="nt-scope nt-min" id="previewScope"><div class="nt-wrap" id="previewRoot"></div></div></div>
+          <p class="field-hint" style="text-align:center">点「查看密信」可以试播显示效果，不会创建任何内容</p>
+        </aside>
+      </div>`,
+    footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="noteSave">${I.flame} 生成链接</button>`,
+  });
+  const root = m.root;
+  const val = (n) => $(`[name="${n}"]`, root);
+
+  function modeOptsHtml() {
+    if (state.mode === 'type') {
+      return `<div class="form-grid">
+        <div class="field"><label>每次出现</label><select class="select" name="chunk">${[1, 2, 3, 5, 10].map((n) => `<option value="${n}" ${n === 2 ? 'selected' : ''}>${n} 个字</option>`).join('')}</select></div>
+        <div class="field"><label>速度</label><select class="select" name="speed"><option value="60">快</option><option value="120" selected>中</option><option value="240">慢</option></select></div>
+      </div>
+      <label class="toggle-row"><div class="txt"><b>允许点击直接显示全部</b></div><span class="switch"><input type="checkbox" name="skip"><i></i></span></label>`;
+    }
+    if (state.mode === 'window') {
+      return `<div class="form-grid">
+        <div class="field"><label>同时显示</label><select class="select" name="window">${[3, 4, 6, 8, 12].map((n) => `<option value="${n}" ${n === 6 ? 'selected' : ''}>${n} 个字</option>`).join('')}</select></div>
+        <div class="field"><label>速度</label><select class="select" name="speed"><option value="120">快</option><option value="220" selected>中</option><option value="400">慢</option></select></div>
+      </div>`;
+    }
+    if (state.mode === 'countdown') {
+      return `<div class="field"><label>显示时长</label><select class="select" name="seconds" style="max-width:240px">${[[10, '10 秒'], [30, '30 秒'], [60, '1 分钟'], [120, '2 分钟'], [300, '5 分钟']].map(([v, l]) => `<option value="${v}" ${v === 30 ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+    }
+    return '';
+  }
+
+  function readDisplay() {
+    const after = val('after').value;
+    const afterValue = val('after_value').value.trim();
+    return {
+      mode: state.mode,
+      chunk: Number(val('chunk')?.value) || 2,
+      window: Number(val('window')?.value) || 6,
+      speed: Number(val('speed')?.value) || 120,
+      seconds: Number(val('seconds')?.value) || 30,
+      skip: !!val('skip')?.checked,
+      hide_on_blur: val('hide_on_blur').checked,
+      after,
+      after_text: after === 'message' ? afterValue : null,
+      after_url: after === 'redirect' ? afterValue : null,
+    };
+  }
+
+  function coverData() {
+    const ttl = Number(val('ttl').value);
+    const pw = val('password').value;
+    return {
+      code: 'preview',
+      site: bootstrap?.site_name || 'ShortLink',
+      status: 'pending',
+      enc: state.enc,
+      meta: { title: val('title').value.trim() || null, from: val('from').value.trim() || null, hint: val('hint').value.trim() || null },
+      theme: { name: state.theme },
+      display: readDisplay(),
+      max_opens: Number(val('max_opens').value),
+      opens: 0,
+      open_ttl: Number(val('open_ttl').value) || null,
+      expires_at: ttl ? Date.now() + ttl * 1000 : null,
+      needs_password: !!pw,
+      attempts_left: pw && Number(val('pw_max_fail').value) ? Number(val('pw_max_fail').value) : null,
+      is_bot: false,
+    };
+  }
+
+  let viewer = null;
+  function paintPreview() {
+    const scope = $('#previewScope', root);
+    scope.className = `nt-scope nt-${state.theme}`;
+    viewer?.destroy();
+    const text = val('text').value;
+    viewer = mountNote($('#previewRoot', root), coverData(), { preview: { format: state.format, text: text || '（这里会显示你写的内容）' } });
+  }
+  const repaint = debounce(paintPreview, 250);
+
+  function paintMode() {
+    $('#modeDesc', root).textContent = NOTE_MODES.find((x) => x.id === state.mode)?.desc || '';
+    $('#modeOpts', root).innerHTML = modeOptsHtml();
+  }
+  function paintEnc() {
+    const hint = $('#encHint', root);
+    if (hint) hint.textContent = state.enc === 'e2e' ? '解密密钥只放在链接 # 后面，服务器和管理员都看不到内容。链接丢了就无法找回。' : '内容加密保存在服务器上，管理员可以查看。适合需要事后核对的场景。';
+  }
+
+  $$('[data-fmt]', root).forEach((b) => b.addEventListener('click', () => {
+    state.format = b.dataset.fmt;
+    $$('[data-fmt]', root).forEach((x) => x.classList.toggle('on', x === b));
+    repaint();
+  }));
+  $$('[data-theme-pick]', root).forEach((b) => b.addEventListener('click', () => {
+    state.theme = b.dataset.themePick;
+    $$('[data-theme-pick]', root).forEach((x) => x.classList.toggle('on', x === b));
+    paintPreview();
+  }));
+  $$('[data-nmode]', root).forEach((b) => b.addEventListener('click', () => {
+    state.mode = b.dataset.nmode;
+    $$('[data-nmode]', root).forEach((x) => x.classList.toggle('on', x === b));
+    paintMode();
+    paintPreview();
+  }));
+  $$('[data-enc]', root).forEach((b) => b.addEventListener('click', () => {
+    state.enc = b.dataset.enc;
+    $$('[data-enc]', root).forEach((x) => x.classList.toggle('on', x === b));
+    paintEnc();
+    paintPreview();
+  }));
+  val('after').addEventListener('change', (e) => {
+    const v = e.target.value;
+    $('#afterBox', root).hidden = v === 'burned';
+    $('#afterLabel', root).textContent = v === 'redirect' ? '跳转地址' : '结束语';
+    val('after_value').placeholder = v === 'redirect' ? 'https://' : '例如：看完记得回我';
+  });
+  val('password').addEventListener('input', (e) => {
+    $('#pwFailBox', root).hidden = !e.target.value;
+  });
+  root.querySelector('.composer-form').addEventListener('input', (e) => {
+    if (e.target.name === 'text') {
+      const n = new TextEncoder().encode(e.target.value).length;
+      $('#nBytes', root).textContent = n < 1024 ? `${n} 字节` : `${(n / 1024).toFixed(1)} KB`;
+    }
+    repaint();
+  });
+  root.querySelector('.composer-form').addEventListener('change', repaint);
+  paintMode();
+  paintEnc();
+  paintPreview();
+  setTimeout(() => val('text').focus(), 60);
+
+  $('#noteSave', root).addEventListener('click', async (ev) => {
+    const errEl = $('#noteErr', root);
+    errEl.hidden = true;
+    const text = val('text').value;
+    const fail = (msg) => {
+      errEl.textContent = msg;
+      errEl.hidden = false;
+    };
+    if (!text.trim()) return fail('请填写密信内容');
+    const display = readDisplay();
+    if (display.after === 'redirect' && !/^https?:\/\//.test(display.after_url || '')) return fail('跳转地址需要以 http:// 或 https:// 开头');
+    const ttl = Number(val('ttl').value);
+    const body = {
+      domain_id: Number(val('domain_id').value),
+      label: val('label').value.trim(),
+      max_opens: Number(val('max_opens').value),
+      expires_at: ttl ? Date.now() + ttl * 1000 : null,
+      open_ttl: Number(val('open_ttl').value) || null,
+      password: val('password').value || null,
+      pw_max_fail: Number(val('pw_max_fail').value),
+      display,
+      theme: { name: state.theme },
+      meta: { title: val('title').value.trim(), from: val('from').value.trim(), hint: val('hint').value.trim() },
+      random_length: 8,
+      enc: state.enc,
+    };
+    const code = val('code').value.trim();
+    if (code && customOk) body.code = code;
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      let key = null;
+      if (state.enc === 'e2e') {
+        const sealed = await encryptNote({ format: state.format, text });
+        body.cipher = sealed.cipher;
+        body.kcv = sealed.kcv;
+        key = sealed.key;
+      } else {
+        body.payload = { format: state.format, text };
+      }
+      const { item } = await api('/api/notes', { method: 'POST', body });
+      const url = key ? `${item.url}#k=${key}` : item.url;
+      if (key) rememberNoteUrl(item.id, url);
+      viewer?.destroy();
+      m.close();
+      onSaved?.();
+      showNoteCreated(item, url, !!key);
+    } catch (err) {
+      fail(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function showNoteCreated(item, url, e2e) {
+  const r = openModal({
+    title: '密信已生成',
+    body: `
+      <div class="success-box">
+        <div class="tick">${I.flame}</div>
+        <div class="code-pill note-url">${esc(url)}</div>
+        <p>${item.max_opens ? `可查看 ${item.max_opens} 次` : '不限查看次数'}${item.expires_at ? ` · ${fmtDate(item.expires_at)} 前有效` : ''}${item.has_password ? ' · 需要密码' : ''}</p>
+      </div>
+      ${e2e ? `<div class="alert warn" style="margin-top:14px">${I.alert}<div># 后面是解密密钥，服务器上没有保存。请现在复制并发送，之后只能在这个浏览器里重新复制。</div></div>` : ''}
+      ${item.has_password ? `<p class="field-hint" style="margin-top:10px">记得把密码通过另一个渠道告诉对方。</p>` : ''}`,
+    footer: `<button class="btn btn-secondary" data-close>关闭</button><button class="btn btn-primary" id="copyNoteUrl">${I.copy} 复制链接</button>`,
+  });
+  $('#copyNoteUrl', r.root).addEventListener('click', async () => (await copyText(url)) && toast('已复制'));
+}
+
 /* ---------------- domains ---------------- */
 
 routes['/domains'] = {
   title: '域名',
   key: 'domains',
   async render(content, topActions) {
-    const admin = me.role === 'admin';
+    const admin = can.domains();
     topActions.innerHTML = admin ? `<button class="btn btn-primary" id="addDomainBtn">${I.plus} 绑定域名</button>` : '';
 
     async function load() {
@@ -1281,7 +1983,7 @@ function openDomainEditor(domain, onSaved) {
 routes['/logs'] = {
   title: '访问记录',
   key: 'logs',
-  adminOnly: true,
+  need: () => can.content(),
   async render(content) {
     const state = { page: 1, q: '', domain: '' };
     let domains = [];
@@ -1296,11 +1998,17 @@ routes['/logs'] = {
             <option value="">全部域名</option>
             ${domains.map((d) => `<option value="${d.id}">${esc(d.hostname)}</option>`).join('')}
           </select>
+          <select class="select" id="gKind">
+            <option value="">全部类型</option>
+            <option value="link">短链接</option>
+            <option value="note">密信</option>
+          </select>
         </div>
         <div id="glogBox"></div>
       </div>`;
     $('#gq').addEventListener('input', debounce((e) => { state.q = e.target.value; state.page = 1; load(); }, 350));
     $('#gDomain').addEventListener('change', (e) => { state.domain = e.target.value; state.page = 1; load(); });
+    $('#gKind').addEventListener('change', (e) => { state.kind = e.target.value; state.page = 1; load(); });
 
     async function load() {
       const box = $('#glogBox');
@@ -1308,6 +2016,7 @@ routes['/logs'] = {
       const params = new URLSearchParams();
       if (state.q) params.set('q', state.q);
       if (state.domain) params.set('domain_id', state.domain);
+      if (state.kind) params.set('kind', state.kind);
       params.set('page', state.page);
       let data;
       try {
@@ -1322,7 +2031,7 @@ routes['/logs'] = {
       }
       box.innerHTML = `
         <div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>短链</th><th>时间</th><th>IP</th><th>位置</th><th>客户端</th><th class="hide-md">来源</th></tr></thead>
+        <thead><tr><th>短链</th><th>时间</th><th>IP</th><th>位置</th><th>客户端</th><th class="hide-md">来源</th><th>结果</th></tr></thead>
         <tbody>${logRowsHtml(data.items, true)}</tbody></table></div>
         ${pagerHtml(data.page, data.per_page, data.total)}`;
       $$('[data-page]', box).forEach((b) => b.addEventListener('click', () => { state.page = Number(b.dataset.page); load(); }));
@@ -1331,14 +2040,124 @@ routes['/logs'] = {
   },
 };
 
+/* ---------------- capability form (groups & per-user adjustments) ---------------- */
+
+const SCOPE_OPTIONS = [
+  ['links:read', '读取短链'],
+  ['links:write', '创建/修改短链'],
+  ['logs:read', '读取访问记录'],
+  ['domains:read', '读取域名'],
+  ['notes:read', '读取密信'],
+  ['notes:write', '创建密信'],
+];
+
+const CAP_FIELDS = [
+  { section: 'links', title: '短链接', fields: [
+    { key: 'create', label: '可以创建短链', type: 'bool' },
+    { key: 'max', label: '数量上限', type: 'int', hint: '0 表示不限' },
+    { key: 'daily', label: '每天最多创建', type: 'int', hint: '0 表示不限' },
+    { key: 'custom_code', label: '可以自定义后缀', type: 'bool', hint: '关闭后只能使用随机后缀，避免冒充 /login 这类地址' },
+    { key: 'min_code_len', label: '后缀最短位数', type: 'int', min: 1, max: 10 },
+    { key: 'modes', label: '可用跳转方式', type: 'list', options: [['direct', '直接跳转'], ['page', '动画中转页'], ['confirm', '确认页']], hint: '只保留确认页时，访客会先看到真实目的地' },
+    { key: 'edit_target', label: '创建后可以修改目标', type: 'bool', hint: '关闭可防止先放正常地址、再换成钓鱼页' },
+  ] },
+  { section: 'notes', title: '密信', fields: [
+    { key: 'create', label: '可以创建密信', type: 'bool' },
+    { key: 'max_active', label: '进行中的密信上限', type: 'int', hint: '0 表示不限' },
+    { key: 'daily', label: '每天最多创建', type: 'int', hint: '0 表示不限' },
+    { key: 'e2e', label: '允许端到端加密', type: 'bool', hint: '关闭后使用服务端加密，被举报时管理员可以查看内容' },
+    { key: 'max_opens', label: '打开次数上限', type: 'int', hint: '0 表示不限' },
+    { key: 'max_ttl_hours', label: '最长有效期（小时）', type: 'int', hint: '0 表示不限' },
+    { key: 'max_kb', label: '内容大小上限（KB）', type: 'int', min: 1, max: 64 },
+  ] },
+  { section: 'logs', title: '访问记录', fields: [
+    { key: 'view', label: '可以查看自己内容的访问记录', type: 'bool' },
+    { key: 'ip', label: '访客 IP', type: 'enum', options: [['full', '完整显示'], ['masked', '打码'], ['none', '不显示']] },
+    { key: 'export', label: '可以导出 CSV', type: 'bool' },
+  ] },
+  { section: 'api', title: 'API', fields: [
+    { key: 'use', label: '可以创建 API 密钥', type: 'bool' },
+    { key: 'scopes', label: '密钥可用范围', type: 'list', options: SCOPE_OPTIONS },
+  ] },
+  { section: 'rate', title: '限速', fields: [
+    { key: 'per_minute', label: '每分钟最多创建', type: 'int', hint: '短链和密信合计，0 表示不限' },
+  ] },
+];
+
+function capsFormHtml(caps, base = null) {
+  return CAP_FIELDS.map((sec) => `
+    <div class="cap-section">
+      <div class="cap-title">${sec.title}</div>
+      ${sec.fields.map((f) => {
+        const v = caps?.[sec.section]?.[f.key];
+        const changed = base && JSON.stringify(v) !== JSON.stringify(base?.[sec.section]?.[f.key]);
+        const name = `cap.${sec.section}.${f.key}`;
+        let ctl = '';
+        if (f.type === 'bool') ctl = `<span class="switch"><input type="checkbox" name="${name}" ${v ? 'checked' : ''} aria-label="${esc(f.label)}"><i></i></span>`;
+        else if (f.type === 'int') ctl = `<input class="input sm" type="number" name="${name}" value="${Number(v) || 0}" min="${f.min ?? 0}" ${f.max ? `max="${f.max}"` : ''} style="width:110px" aria-label="${esc(f.label)}">`;
+        else if (f.type === 'enum') ctl = `<select class="select sm" name="${name}" style="width:auto" aria-label="${esc(f.label)}">${f.options.map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+        else if (f.type === 'list') ctl = `<div class="cap-chips">${f.options.map(([k, l]) => `<label class="cap-chip"><input type="checkbox" name="${name}" value="${k}" ${(v || []).includes(k) ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>`;
+        return `<div class="cap-row${changed ? ' changed' : ''}${f.type === 'list' ? ' wide' : ''}" data-sec="${sec.section}" data-key="${f.key}">
+          <div class="cap-label"><b>${f.label}${base ? ' <span class="badge badge-orange cap-badge">已调整</span>' : ''}</b>${f.hint ? `<span>${f.hint}</span>` : ''}</div>
+          <div class="cap-ctl">${ctl}</div>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+}
+
+function readCapsForm(root) {
+  const out = {};
+  for (const sec of CAP_FIELDS) {
+    out[sec.section] = {};
+    for (const f of sec.fields) {
+      const name = `cap.${sec.section}.${f.key}`;
+      if (f.type === 'bool') out[sec.section][f.key] = !!root.querySelector(`[name="${name}"]`)?.checked;
+      else if (f.type === 'int') out[sec.section][f.key] = Number(root.querySelector(`[name="${name}"]`)?.value) || 0;
+      else if (f.type === 'enum') out[sec.section][f.key] = root.querySelector(`[name="${name}"]`)?.value;
+      else if (f.type === 'list') out[sec.section][f.key] = $$(`[name="${name}"]:checked`, root).map((x) => x.value);
+    }
+  }
+  return out;
+}
+
+function capsSummary(c) {
+  if (!c) return '';
+  const chips = [];
+  chips.push(c.links.create ? `短链 ${c.links.max ? c.links.max + ' 条' : '不限'}` : '不能建短链');
+  if (!c.links.custom_code) chips.push('仅随机后缀');
+  if (c.links.modes.length === 1) chips.push({ direct: '仅直接跳转', page: '仅中转页', confirm: '强制确认页' }[c.links.modes[0]]);
+  if (!c.links.edit_target) chips.push('不能改目标');
+  chips.push(c.notes.create ? `密信 ${c.notes.max_active ? c.notes.max_active + ' 封' : '不限'}` : '不能建密信');
+  if (!c.notes.e2e) chips.push('服务端加密');
+  if (c.logs.ip !== 'full') chips.push(c.logs.ip === 'masked' ? 'IP 打码' : '不显示 IP');
+  if (!c.api.use) chips.push('无 API');
+  if (c.rate.per_minute) chips.push(`${c.rate.per_minute} 次/分钟`);
+  return `<div class="chip-row">${chips.map((t) => `<span class="badge badge-gray">${esc(t)}</span>`).join('')}</div>`;
+}
+
 /* ---------------- users ---------------- */
+
+function userStatusHtml(u) {
+  if (u.frozen) return '<span class="status bad">已冻结</span>';
+  if (u.disabled) return '<span class="status">已停用</span>';
+  if (u.expires_at && u.expires_at < Date.now()) return '<span class="status warn">已过期</span>';
+  if (u.expires_at) return `<span class="status ok">正常</span><div class="cell-sub">${fmtDate(u.expires_at, false)} 到期</div>`;
+  return '<span class="status ok">正常</span>';
+}
+
+function roleBadge(u) {
+  if (u.is_owner) return '<span class="badge badge-blue">所有者</span>';
+  if (u.role === 'admin') return '<span class="badge badge-blue">管理员</span>';
+  const tweaked = u.caps_override && Object.keys(u.caps_override).length;
+  return `<span class="badge badge-gray">${esc(u.group?.name || '成员')}</span>${tweaked ? ' <span class="badge badge-orange" title="有个人权限调整">已调整</span>' : ''}`;
+}
 
 routes['/users'] = {
   title: '用户',
   key: 'users',
-  adminOnly: true,
+  need: () => can.users(),
   async render(content, topActions) {
-    topActions.innerHTML = `<button class="btn btn-primary" id="addUserBtn">${I.plus} 新建用户</button>`;
+    topActions.innerHTML = `<a class="btn btn-secondary" href="/access" data-nav>${I.ticket} 邀请链接</a><button class="btn btn-primary" id="addUserBtn">${I.plus} 新建用户</button>`;
 
     async function load() {
       let data;
@@ -1351,26 +2170,24 @@ routes['/users'] = {
       content.innerHTML = `
         <div class="card">
           <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>用户</th><th>角色</th><th>域名范围</th><th class="num">短链 / 配额</th><th class="hide-md">登录方式</th><th>状态</th><th class="w-actions"></th></tr></thead>
+          <thead><tr><th>用户</th><th>角色 / 用户组</th><th class="num">内容</th><th class="hide-md">登录方式</th><th>状态</th><th class="w-actions"></th></tr></thead>
           <tbody>
             ${data.items
               .map((u) => {
-                const scope = u.role === 'admin' ? '全部域名' : u.domain_ids.length ? `${u.domain_ids.length} 个域名` : '无';
-                const quota = u.role === 'admin' || u.quota_max_links === 0 ? `${fmtNum(u.link_count)} / 不限` : `${fmtNum(u.link_count)} / ${fmtNum(u.quota_max_links)}`;
-                const auth = [u.has_password ? '密码' : null, u.passkey_count ? `通行密钥 ×${u.passkey_count}` : null].filter(Boolean).join(' · ') || '—';
+                const auth = [u.has_password ? '密码' : null, u.passkey_count ? `通行密钥 ×${u.passkey_count}` : null, u.login_link_count ? `登录链接 ×${u.login_link_count}` : null].filter(Boolean).join(' · ') || '—';
                 return `<tr>
                   <td class="cell-main"><div style="display:flex;align-items:center;gap:10px">
                     <div class="avatar sm">${esc((u.display_name || u.username)[0].toUpperCase())}</div>
-                    <div style="min-width:0"><b>${esc(u.username)}</b>${u.display_name && u.display_name !== u.username ? `<div class="cell-sub">${esc(u.display_name)}</div>` : ''}</div>
+                    <div style="min-width:0"><b>${esc(u.username)}</b>${u.id === me.id ? ' <span class="badge badge-blue">我</span>' : ''}
+                      <div class="cell-sub truncate" style="max-width:220px">${esc([u.display_name !== u.username ? u.display_name : null, u.note || null].filter(Boolean).join(' · ') || ' ')}</div></div>
                   </div></td>
-                  <td class="clean">${u.role === 'admin' ? '<span class="badge badge-blue">管理员</span>' : '<span class="badge badge-gray">成员</span>'}</td>
-                  <td data-th="域名" class="dim">${scope}</td>
-                  <td data-th="短链" class="num">${quota}</td>
+                  <td class="clean">${roleBadge(u)}</td>
+                  <td data-th="内容" class="num">${u.role === 'admin' ? '<span class="dim">—</span>' : `${fmtNum(u.link_count)}<div class="cell-sub">密信 ${fmtNum(u.note_count)}</div>`}</td>
                   <td class="dim hide-md">${auth}</td>
-                  <td class="clean">${u.disabled ? '<span class="status bad">已停用</span>' : '<span class="status ok">正常</span>'}</td>
+                  <td class="clean">${userStatusHtml(u)}</td>
                   <td class="cell-actions"><div class="row-actions">
                     <button class="icon-btn" data-uedit="${u.id}" title="编辑" aria-label="编辑">${I.pencil}</button>
-                    ${u.id === me.id ? '' : `<button class="icon-btn danger" data-udel="${u.id}" title="删除" aria-label="删除">${I.trash}</button>`}
+                    ${u.id === me.id || u.is_owner ? '' : `<button class="icon-btn" data-umenu="${u.id}" title="更多" aria-label="更多">${I.dots}</button>`}
                   </div></td>
                 </tr>`;
               })
@@ -1379,23 +2196,28 @@ routes['/users'] = {
         </div>`;
       const byId = new Map(data.items.map((u) => [String(u.id), u]));
       $$('[data-uedit]', content).forEach((b) => b.addEventListener('click', () => openUserEditor(byId.get(b.dataset.uedit), load)));
-      $$('[data-udel]', content).forEach((b) =>
-        b.addEventListener('click', async () => {
-          const u = byId.get(b.dataset.udel);
-          const ok = await confirmDialog({
-            title: '删除用户',
-            message: `确定删除用户 <b>${esc(u.username)}</b> 吗？其会话、通行密钥与 API 密钥将被清除，创建的短链保留（转为无主）。`,
-            okText: '删除',
-            danger: true,
-          });
-          if (!ok) return;
-          try {
-            await api(`/api/users/${u.id}`, { method: 'DELETE' });
-            toast('用户已删除');
-            load();
-          } catch (err) {
-            toast(err.message, 'err');
-          }
+      $$('[data-umenu]', content).forEach((b) =>
+        b.addEventListener('click', () => {
+          const u = byId.get(b.dataset.umenu);
+          const adminTarget = u.role === 'admin';
+          openMenu(b, [
+            ...(!adminTarget && !u.frozen ? [{ label: '创建登录链接', icon: I.ticket, action: () => openLoginLinkModal(u, load) }] : []),
+            u.frozen
+              ? { label: '解除冻结', icon: I.check, action: () => freezeUser(u, false, load) }
+              : { label: '冻结账户', icon: I.snow, danger: true, action: () => freezeUser(u, true, load) },
+            '-',
+            { label: '删除用户', icon: I.trash, danger: true, action: async () => {
+              const ok = await confirmDialog({ title: '删除用户', message: `确定删除用户 <b>${esc(u.username)}</b> 吗？其会话、通行密钥、API 密钥和登录链接都会被清除，创建的内容保留（转为无主）。`, okText: '删除', danger: true });
+              if (!ok) return;
+              try {
+                await api(`/api/users/${u.id}`, { method: 'DELETE' });
+                toast('用户已删除');
+                load();
+              } catch (err) {
+                toast(err.message, 'err');
+              }
+            } },
+          ]);
         })
       );
     }
@@ -1404,120 +2226,621 @@ routes['/users'] = {
   },
 };
 
-function openUserEditor(user, onSaved) {
-  const isNew = !user;
-  const u = user || { perms: { create_links: true, view_logs: true, use_api: true }, domain_ids: [], quota_max_links: 100, role: 'user' };
-  const self = !isNew && user.id === me.id;
-
-  let domains = [];
-  openModalAsync();
-
-  async function openModalAsync() {
-    try {
-      domains = (await api('/api/domains')).items.filter((d) => !d.is_admin);
-    } catch {}
-    const m = openModal({
-      title: isNew ? '新建用户' : `编辑 ${user.username}`,
-      wide: true,
-      body: `
-        <form id="userForm" novalidate>
-          <div class="form-section">
-            <div class="form-grid">
-              <div class="field"><label>用户名</label>
-                <input class="input" name="username" value="${esc(u.username || '')}" ${isNew ? '' : 'disabled'} autocapitalize="off" spellcheck="false" placeholder="alice">
-              </div>
-              <div class="field"><label>显示名称 <span class="opt">可选</span></label><input class="input" name="display_name" value="${esc(u.display_name || '')}" maxlength="60"></div>
-            </div>
-            <div class="form-grid">
-              <div class="field"><label>${isNew ? '初始密码' : '重置密码'} ${isNew ? '' : '<span class="opt">留空则不修改</span>'}</label>
-                <input class="input" type="password" name="password" autocomplete="new-password" placeholder="至少 8 位">
-              </div>
-              <div class="field"><label>角色</label>
-                <div class="seg block">
-                  <button type="button" class="${u.role !== 'admin' ? 'on' : ''}" data-role="user">普通用户</button>
-                  <button type="button" class="${u.role === 'admin' ? 'on' : ''}" data-role="admin" ${self ? 'disabled' : ''}>管理员</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div id="userPerms">
-            <div class="form-section">
-              <div class="form-section-title">功能权限</div>
-              <div class="check-list">
-                <label class="check-row"><input type="checkbox" name="p_create" ${u.perms?.create_links ? 'checked' : ''}><span>创建与管理自己的短链</span></label>
-                <label class="check-row"><input type="checkbox" name="p_logs" ${u.perms?.view_logs ? 'checked' : ''}><span>查看自己短链的访问记录</span></label>
-                <label class="check-row"><input type="checkbox" name="p_api" ${u.perms?.use_api ? 'checked' : ''}><span>使用 API</span><span class="sub">创建密钥调用 /api/v1</span></label>
-              </div>
-            </div>
-            <div class="form-section">
-              <div class="form-section-title">可用域名</div>
-              ${domains.length
-                ? `<div class="check-list">${domains.map((d) => `<label class="check-row"><input type="checkbox" name="dom_${d.id}" ${u.role === 'admin' || u.domain_ids?.includes(d.id) ? 'checked' : ''}><span>${esc(d.hostname)}</span>${d.remark ? `<span class="sub">${esc(d.remark)}</span>` : ''}</label>`).join('')}</div>`
-                : '<p class="field-hint">还没有可用的短链域名</p>'}
-              <div class="field" style="margin-top:16px"><label>短链数量上限 <span class="opt">0 表示不限</span></label>
-                <input class="input" type="number" name="quota" min="0" max="1000000" value="${u.quota_max_links ?? 100}" style="max-width:160px">
-              </div>
-            </div>
-          </div>
-          ${!self ? `
-          <div class="form-section">
-            <label class="toggle-row">
-              <div class="txt"><b>停用账户</b><span>停用后无法登录，现有会话立即失效</span></div>
-              <span class="switch"><input type="checkbox" name="disabled" ${u.disabled ? 'checked' : ''}><i></i></span>
-            </label>
-          </div>` : ''}
-          <div class="field-error" id="userErr" hidden></div>
-        </form>`,
-      footer: `
-        <button class="btn btn-secondary" data-close>取消</button>
-        <button class="btn btn-primary" id="userSave">${isNew ? '创建' : '保存'}</button>`,
+async function freezeUser(u, frozen, onDone) {
+  if (frozen) {
+    const ok = await confirmDialog({
+      title: '冻结账户',
+      message: `冻结 <b>${esc(u.username)}</b> 会立即：停用账户、停用他创建的全部短链和密信、注销所有登录设备、撤销他的登录链接。之后可以随时解除冻结并恢复内容。`,
+      okText: '冻结',
+      danger: true,
     });
-    const root = m.root;
-    let role = u.role;
-    $$('[data-role]', root).forEach((b) =>
-      b.addEventListener('click', () => {
-        role = b.dataset.role;
-        $$('[data-role]', root).forEach((x) => x.classList.toggle('on', x === b));
-        $('#userPerms', root).hidden = role === 'admin';
-      })
-    );
-    if (u.role === 'admin') $('#userPerms', root).hidden = true;
+    if (!ok) return;
+  }
+  try {
+    const r = await api(`/api/users/${u.id}/freeze`, { method: 'POST', body: { frozen } });
+    toast(frozen ? `已冻结，停用了 ${r.disabled_items} 条内容` : `已解除冻结，恢复了 ${r.restored} 条内容`);
+    onDone?.();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
 
-    $('#userSave', root).addEventListener('click', async () => {
-      const errEl = $('#userErr', root);
-      errEl.hidden = true;
-      const body = {
-        display_name: $('[name="display_name"]', root).value.trim(),
-        role,
-        perms: {
-          create_links: $('[name="p_create"]', root).checked,
-          view_logs: $('[name="p_logs"]', root).checked,
-          use_api: $('[name="p_api"]', root).checked,
-        },
-        domain_ids: domains.filter((d) => $(`[name="dom_${d.id}"]`, root)?.checked).map((d) => d.id),
-        quota_max_links: Number($('[name="quota"]', root).value) || 0,
-        disabled: $('[name="disabled"]', root)?.checked || false,
-      };
-      const pw = $('[name="password"]', root).value;
-      if (pw) body.password = pw;
-      if (isNew && role === 'user' && !pw) {
-        errEl.textContent = '普通用户必须设置初始密码';
+const EXPIRY_CHOICES = [
+  ['', '长期有效'],
+  ['7', '7 天后到期'],
+  ['30', '30 天后到期'],
+  ['90', '90 天后到期'],
+  ['date', '指定日期'],
+];
+
+async function openUserEditor(user, onSaved) {
+  const isNew = !user;
+  let groups = [];
+  let domains = [];
+  try {
+    const [g, d] = await Promise.all([api('/api/groups'), api('/api/domains')]);
+    groups = g.items;
+    domains = d.items.filter((x) => !x.is_admin);
+  } catch (err) {
+    toast(err.message, 'err');
+    return;
+  }
+  const memberGroup = groups.find((g) => g.builtin === 'member') || groups[0];
+  const u = user || { role: 'user', group_id: memberGroup?.id, domain_ids: domains.map((x) => x.id), caps: memberGroup?.caps, caps_override: {}, admin_perms: { users: true, domains: true, settings: true, content: true } };
+  const self = !isNew && user.id === me.id;
+  const canChangeRole = me.is_owner && !u.is_owner;
+  const groupOf = (id) => groups.find((g) => g.id === Number(id));
+  const hasOverride = !isNew && Object.keys(user.caps_override || {}).length > 0;
+
+  const m = openModal({
+    title: isNew ? '新建用户' : `编辑 ${user.username}`,
+    wide: true,
+    body: `
+      <form id="userForm" novalidate>
+        <div class="form-section">
+          <div class="form-grid">
+            <div class="field"><label>用户名</label>
+              <input class="input" name="username" value="${esc(u.username || '')}" ${isNew ? '' : 'disabled'} autocapitalize="off" spellcheck="false" placeholder="alice">
+            </div>
+            <div class="field"><label>显示名称 <span class="opt">可选</span></label><input class="input" name="display_name" value="${esc(u.display_name || '')}" maxlength="60"></div>
+          </div>
+          <div class="field"><label>备注 <span class="opt">只有管理员能看到</span></label><input class="input" name="note" value="${esc(u.note || '')}" maxlength="200" placeholder="例如：项目外包，11 月底到期"></div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">登录方式<span>${isNew ? '可以不设密码，只通过登录链接登录' : '留空则不修改密码'}</span></div>
+          <div class="form-grid">
+            <div class="field"><label>${isNew ? '初始密码' : '重置密码'} <span class="opt">可选</span></label>
+              <input class="input" type="password" name="password" autocomplete="new-password" placeholder="至少 8 位">
+            </div>
+          </div>
+          <label class="toggle-row"><div class="txt"><b>首次登录时必须修改密码</b><span>设置了密码时生效，对方登录后要先改成自己的密码</span></div><span class="switch"><input type="checkbox" name="must_change_password" ${isNew || u.must_change_password ? 'checked' : ''}><i></i></span></label>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">角色</div>
+          <div class="seg block" style="max-width:360px">
+            <button type="button" class="${u.role !== 'admin' ? 'on' : ''}" data-role="user" ${canChangeRole ? '' : 'disabled'}>成员</button>
+            <button type="button" class="${u.role === 'admin' ? 'on' : ''}" data-role="admin" ${canChangeRole ? '' : 'disabled'}>管理员</button>
+          </div>
+          ${!canChangeRole && !u.is_owner ? '<div class="field-hint">只有所有者可以设置管理员</div>' : ''}
+          ${u.is_owner ? '<div class="field-hint">所有者拥有全部权限，不能修改角色</div>' : ''}
+          <div id="adminBox" ${u.role === 'admin' ? '' : 'hidden'} style="margin-top:14px">
+            <div class="check-list">
+              ${[['users', '管理用户', '用户、用户组、邀请和登录链接、操作日志'], ['domains', '管理域名', '绑定、修改、删除域名'], ['settings', '管理设置', '站点设置和数据清理'], ['content', '查看全部内容', '所有人的短链、密信和访问记录']]
+                .map(([k, l, h]) => `<label class="check-row"><input type="checkbox" name="ap_${k}" ${u.admin_perms?.[k] ? 'checked' : ''} ${me.is_owner && !u.is_owner ? '' : 'disabled'}><span>${l}</span><span class="sub">${h}</span></label>`)
+                .join('')}
+            </div>
+          </div>
+        </div>
+        <div id="memberBox" ${u.role === 'admin' ? 'hidden' : ''}>
+          <div class="form-section">
+            <div class="form-section-title">用户组</div>
+            <select class="select" name="group_id" style="max-width:360px">
+              ${groups.map((g) => `<option value="${g.id}" ${Number(u.group_id) === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+            </select>
+            <div class="field-hint" id="groupDesc"></div>
+            <div id="groupSummary" style="margin-top:10px"></div>
+          </div>
+          <div class="form-section">
+            <div class="form-section-title">可用域名</div>
+            ${domains.length
+              ? `<div class="check-list">${domains.map((d) => `<label class="check-row"><input type="checkbox" name="dom_${d.id}" ${(u.domain_ids || []).includes?.(d.id) ? 'checked' : ''}><span>${esc(d.hostname)}</span>${d.remark ? `<span class="sub">${esc(d.remark)}</span>` : ''}</label>`).join('')}</div>`
+              : '<p class="field-hint">还没有短链域名</p>'}
+          </div>
+          <div class="form-section">
+            <details class="cap-details" id="capDetails" ${hasOverride ? 'open' : ''}>
+              <summary><span>个人权限调整</span><span class="sub">${hasOverride ? '这个账户有单独调整' : '在用户组之上单独放宽或收紧'}</span>${I.chevRight.replace('<svg', '<svg class="chev"')}</summary>
+              <div id="capBox"></div>
+              ${hasOverride ? '<button type="button" class="btn btn-secondary btn-sm" id="capReset" style="margin-top:12px">恢复为用户组设置</button>' : ''}
+            </details>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">账户有效期${u.expires_at ? `<span>当前：${fmtDate(u.expires_at)} 到期</span>` : ''}</div>
+          <div class="input-row" style="max-width:420px">
+            <select class="select" name="expiry" ${self ? 'disabled' : ''}>
+              ${!isNew ? '<option value="keep" selected>保持不变</option>' : ''}
+              ${EXPIRY_CHOICES.map(([v, l]) => `<option value="${v}" ${isNew && v === '' ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <input class="input" type="date" name="expiry_date" hidden>
+          </div>
+          <div class="field-hint">到期后账户自动停用，内容保留</div>
+        </div>
+        ${!self && !u.is_owner ? `
+        <div class="form-section">
+          <label class="toggle-row">
+            <div class="txt"><b>停用账户</b><span>停用后无法登录，现有会话立即失效。需要同时停用他的内容时，请用「冻结账户」</span></div>
+            <span class="switch"><input type="checkbox" name="disabled" ${u.disabled ? 'checked' : ''}><i></i></span>
+          </label>
+        </div>` : ''}
+        <div class="field-error" id="userErr" hidden></div>
+      </form>`,
+    footer: `
+      <button class="btn btn-secondary" data-close>取消</button>
+      <button class="btn btn-primary" id="userSave">${isNew ? '创建' : '保存'}</button>`,
+  });
+  const root = m.root;
+  let role = u.role;
+  let capsTouched = false;
+  let capsReset = false;
+
+  const paintGroup = (resetCaps) => {
+    const g = groupOf($('[name="group_id"]', root)?.value);
+    $('#groupDesc', root).textContent = g?.description || '';
+    $('#groupSummary', root).innerHTML = g ? capsSummary(g.caps) : '';
+    const effective = resetCaps || isNew ? g?.caps : user.caps;
+    $('#capBox', root).innerHTML = capsFormHtml(effective, g?.caps);
+    capsTouched = false;
+  };
+  if ($('[name="group_id"]', root)) {
+    paintGroup(false);
+    $('[name="group_id"]', root).addEventListener('change', () => {
+      paintGroup(true);
+      const g = groupOf($('[name="group_id"]', root).value);
+      if (isNew && g?.builtin === 'restricted') $('[name="expiry"]', root).value = '30';
+    });
+  }
+  $('#capBox', root)?.addEventListener('input', (e) => {
+    capsTouched = true;
+    const row = e.target.closest('.cap-row');
+    const g = groupOf($('[name="group_id"]', root).value);
+    if (!row || !g) return;
+    const now = readCapsForm($('#capBox', root));
+    const { sec, key } = row.dataset;
+    row.classList.toggle('changed', JSON.stringify(now[sec][key]) !== JSON.stringify(g.caps[sec][key]));
+  });
+  $('#capReset', root)?.addEventListener('click', () => {
+    capsReset = true;
+    paintGroup(true);
+    toast('保存后恢复为用户组设置');
+  });
+  $$('[data-role]', root).forEach((b) =>
+    b.addEventListener('click', () => {
+      role = b.dataset.role;
+      $$('[data-role]', root).forEach((x) => x.classList.toggle('on', x === b));
+      $('#adminBox', root).hidden = role !== 'admin';
+      $('#memberBox', root).hidden = role === 'admin';
+    })
+  );
+  $('[name="expiry"]', root).addEventListener('change', (e) => {
+    $('[name="expiry_date"]', root).hidden = e.target.value !== 'date';
+  });
+
+  $('#userSave', root).addEventListener('click', async () => {
+    const errEl = $('#userErr', root);
+    errEl.hidden = true;
+    const body = {
+      display_name: $('[name="display_name"]', root).value.trim(),
+      note: $('[name="note"]', root).value.trim(),
+      must_change_password: $('[name="must_change_password"]', root).checked,
+    };
+    if (canChangeRole) body.role = role;
+    if (role === 'admin' && me.is_owner && !u.is_owner) {
+      body.admin_perms = Object.fromEntries(['users', 'domains', 'settings', 'content'].map((k) => [k, $(`[name="ap_${k}"]`, root).checked]));
+    }
+    if (role === 'user') {
+      body.group_id = Number($('[name="group_id"]', root).value);
+      body.domain_ids = domains.filter((d) => $(`[name="dom_${d.id}"]`, root)?.checked).map((d) => d.id);
+      if (capsReset && !capsTouched) body.caps_override = null;
+      else if (capsTouched) body.caps_override = readCapsForm($('#capBox', root));
+    }
+    const pw = $('[name="password"]', root).value;
+    if (pw) body.password = pw;
+    const exp = $('[name="expiry"]', root).value;
+    if (exp === 'date') {
+      const v = $('[name="expiry_date"]', root).value;
+      if (!v) {
+        errEl.textContent = '请选择到期日期';
         errEl.hidden = false;
         return;
       }
-      try {
-        if (isNew) await api('/api/users', { method: 'POST', body: { ...body, username: $('[name="username"]', root).value.trim() } });
-        else await api(`/api/users/${user.id}`, { method: 'PATCH', body });
-        toast(isNew ? '用户已创建' : '已保存');
+      body.expires_at = new Date(v + 'T23:59:59').getTime();
+    } else if (exp === '') body.expires_at = null;
+    else if (exp !== 'keep') body.expires_in_days = Number(exp);
+    const disabledEl = $('[name="disabled"]', root);
+    if (disabledEl) body.disabled = disabledEl.checked;
+    try {
+      if (isNew) {
+        const created = await api('/api/users', { method: 'POST', body: { ...body, username: $('[name="username"]', root).value.trim() } });
         m.close();
+        toast('用户已创建');
         onSaved?.();
-      } catch (err) {
-        errEl.textContent = err.message;
-        errEl.hidden = false;
+        if (!pw && created.item.role === 'user') {
+          const go = await confirmDialog({ title: '还没有登录方式', message: `<b>${esc(created.item.username)}</b> 没有设置密码。要现在给他创建一个登录链接吗？`, okText: '创建登录链接' });
+          if (go) openLoginLinkModal(created.item, onSaved);
+        }
+      } else {
+        await api(`/api/users/${user.id}`, { method: 'PATCH', body });
+        toast('已保存');
+        m.close();
+        if (self) await loadMe();
+        onSaved?.();
       }
-    });
-  }
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    }
+  });
 }
+
+/* ---------------- user groups ---------------- */
+
+routes['/groups'] = {
+  title: '用户组',
+  key: 'groups',
+  need: () => can.users(),
+  async render(content, topActions) {
+    topActions.innerHTML = `<button class="btn btn-primary" id="addGroupBtn">${I.plus} 新建用户组</button>`;
+    let data;
+    async function load() {
+      try {
+        data = await api('/api/groups');
+      } catch (err) {
+        content.innerHTML = errorHtml(err);
+        return;
+      }
+      content.innerHTML = `
+        <div class="note" style="margin-bottom:16px"><div class="note-body" style="padding:12px 16px">用户组决定成员能做什么、能用多少。管理员不受用户组限制。修改用户组会立即影响组里的所有成员，个人调整过的项目除外。</div></div>
+        <div class="group-grid">
+          ${data.items.map((g) => `
+            <div class="card group-card">
+              <div class="card-head"><h3>${esc(g.name)}</h3>${g.builtin ? '<span class="badge badge-gray">预设</span>' : ''}<div class="right">${fmtNum(g.members)} 位成员</div></div>
+              <div class="card-body" style="display:grid;gap:10px;align-content:start">
+                <p class="dim" style="font-size:13px;min-height:20px">${esc(g.description || '—')}</p>
+                ${capsSummary(g.caps)}
+              </div>
+              <div class="card-foot">
+                <button class="btn btn-secondary btn-sm" data-gcopy="${g.id}">复制</button>
+                ${g.members ? '' : `<button class="btn btn-secondary btn-sm" data-gdel="${g.id}">删除</button>`}
+                <button class="btn btn-primary btn-sm" data-gedit="${g.id}">编辑</button>
+              </div>
+            </div>`).join('')}
+        </div>`;
+      const byId = new Map(data.items.map((g) => [String(g.id), g]));
+      $$('[data-gedit]', content).forEach((b) => b.addEventListener('click', () => openGroupEditor(byId.get(b.dataset.gedit), load)));
+      $$('[data-gcopy]', content).forEach((b) => b.addEventListener('click', () => {
+        const g = byId.get(b.dataset.gcopy);
+        openGroupEditor({ name: `${g.name} 副本`, description: g.description, caps: g.caps }, load, true);
+      }));
+      $$('[data-gdel]', content).forEach((b) => b.addEventListener('click', async () => {
+        const g = byId.get(b.dataset.gdel);
+        const ok = await confirmDialog({ title: '删除用户组', message: `确定删除 <b>${esc(g.name)}</b> 吗？`, okText: '删除', danger: true });
+        if (!ok) return;
+        try {
+          await api(`/api/groups/${g.id}`, { method: 'DELETE' });
+          toast('已删除');
+          load();
+        } catch (err) {
+          toast(err.message, 'err');
+        }
+      }));
+    }
+    $('#addGroupBtn').addEventListener('click', () => {
+      const base = data?.items.find((g) => g.builtin === 'member');
+      openGroupEditor({ name: '', description: '', caps: base?.caps || data?.defaults }, load, true);
+    });
+    load();
+  },
+};
+
+function openGroupEditor(group, onSaved, isNew = false) {
+  const m = openModal({
+    title: isNew ? '新建用户组' : `编辑 ${group.name}`,
+    wide: true,
+    body: `
+      <form novalidate>
+        <div class="form-section">
+          <div class="form-grid">
+            <div class="field"><label>名称</label><input class="input" name="gname" value="${esc(group.name || '')}" maxlength="30"></div>
+            <div class="field"><label>说明 <span class="opt">可选</span></label><input class="input" name="gdesc" value="${esc(group.description || '')}" maxlength="200"></div>
+          </div>
+        </div>
+        <div class="form-section"><div id="capBox">${capsFormHtml(group.caps)}</div></div>
+        <div class="field-error" id="gErr" hidden></div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="gSave">${isNew ? '创建' : '保存'}</button>`,
+  });
+  $('#gSave', m.root).addEventListener('click', async () => {
+    const body = { name: $('[name="gname"]', m.root).value.trim(), description: $('[name="gdesc"]', m.root).value.trim(), caps: readCapsForm($('#capBox', m.root)) };
+    try {
+      if (isNew) await api('/api/groups', { method: 'POST', body });
+      else await api(`/api/groups/${group.id}`, { method: 'PATCH', body });
+      toast(isNew ? '用户组已创建' : '已保存');
+      m.close();
+      onSaved?.();
+    } catch (err) {
+      $('#gErr', m.root).textContent = err.message;
+      $('#gErr', m.root).hidden = false;
+    }
+  });
+}
+
+/* ---------------- invite & login links ---------------- */
+
+const accessState = { kind: 'invite' };
+
+function tokenStatusHtml(t) {
+  return {
+    active: '<span class="status ok">可用</span>',
+    revoked: '<span class="status">已撤销</span>',
+    expired: '<span class="status warn">已过期</span>',
+    used_up: '<span class="status">次数用完</span>',
+  }[t.status];
+}
+
+function showTokenUrl(title, url, hint) {
+  const r = openModal({
+    title,
+    body: `
+      <div class="alert warn">${I.alert}<div>${hint}</div></div>
+      <div class="key-reveal" style="margin-top:14px">${esc(url)}</div>`,
+    footer: `<button class="btn btn-secondary" data-close>关闭</button><button class="btn btn-primary" id="copyTk">${I.copy} 复制链接</button>`,
+  });
+  $('#copyTk', r.root).addEventListener('click', async () => (await copyText(url)) && toast('已复制'));
+}
+
+async function openLoginLinkModal(user, onDone) {
+  let users = [];
+  if (!user) {
+    try {
+      users = (await api('/api/users')).items.filter((u) => u.role === 'user' && !u.frozen);
+    } catch (err) {
+      return toast(err.message, 'err');
+    }
+    if (!users.length) return toast('还没有可以创建登录链接的成员账户', 'err');
+  }
+  const m = openModal({
+    title: user ? `给 ${user.username} 创建登录链接` : '创建登录链接',
+    body: `
+      <form novalidate>
+        ${user ? '' : `<div class="field"><label>账户</label><select class="select" name="uid">${users.map((u) => `<option value="${u.id}">${esc(u.username)}（${esc(u.group?.name || '成员')}）</option>`).join('')}</select></div>`}
+        <div class="field"><label>备注 <span class="opt">可选</span></label><input class="input" name="label" maxlength="60" placeholder="例如：发给小王"></div>
+        <div class="form-grid">
+          <div class="field"><label>可使用次数</label>
+            <select class="select" name="uses"><option value="1">1 次</option><option value="5">5 次</option><option value="0" selected>不限</option></select>
+          </div>
+          <div class="field"><label>有效期</label>
+            <select class="select" name="hours"><option value="1">1 小时</option><option value="24">1 天</option><option value="168" selected>7 天</option><option value="720">30 天</option><option value="0">长期</option></select>
+          </div>
+        </div>
+        <p class="field-hint">打开链接的人会直接以这个账户登录，不需要密码。请只发给你信任的那个人，泄露后可以随时撤销。</p>
+        <div class="field-error" id="llErr" hidden></div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="llSave">创建</button>`,
+  });
+  $('#llSave', m.root).addEventListener('click', async () => {
+    try {
+      const r = await api('/api/access-tokens', {
+        method: 'POST',
+        body: {
+          kind: 'login',
+          user_id: user ? user.id : Number($('[name="uid"]', m.root).value),
+          label: $('[name="label"]', m.root).value.trim(),
+          max_uses: Number($('[name="uses"]', m.root).value),
+          expires_in_hours: Number($('[name="hours"]', m.root).value),
+        },
+      });
+      m.close();
+      showTokenUrl('登录链接已创建', r.url, '链接只显示这一次。拿到链接的人可以直接登录，请通过私密渠道发送。');
+      onDone?.();
+    } catch (err) {
+      $('#llErr', m.root).textContent = err.message;
+      $('#llErr', m.root).hidden = false;
+    }
+  });
+}
+
+async function openInviteModal(onDone) {
+  let groups = [];
+  let domains = [];
+  try {
+    const [g, d] = await Promise.all([api('/api/groups'), api('/api/domains')]);
+    groups = g.items;
+    domains = d.items.filter((x) => !x.is_admin);
+  } catch (err) {
+    return toast(err.message, 'err');
+  }
+  const m = openModal({
+    title: '创建邀请链接',
+    wide: true,
+    body: `
+      <form novalidate>
+        <div class="form-section">
+          <div class="form-grid">
+            <div class="field"><label>备注 <span class="opt">可选</span></label><input class="input" name="label" maxlength="60" placeholder="例如：活动志愿者"></div>
+            <div class="field"><label>加入的用户组</label><select class="select" name="gid">${groups.map((g) => `<option value="${g.id}" ${g.builtin === 'member' ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
+          </div>
+          <div id="invSummary"></div>
+        </div>
+        <div class="form-section">
+          <div class="form-section-title">可用域名</div>
+          ${domains.length ? `<div class="check-list">${domains.map((d) => `<label class="check-row"><input type="checkbox" name="dom_${d.id}" checked><span>${esc(d.hostname)}</span>${d.remark ? `<span class="sub">${esc(d.remark)}</span>` : ''}</label>`).join('')}</div>` : '<p class="field-hint">还没有短链域名</p>'}
+        </div>
+        <div class="form-section">
+          <div class="form-grid">
+            <div class="field"><label>可注册人数</label><select class="select" name="uses"><option value="1" selected>1 人</option><option value="5">5 人</option><option value="20">20 人</option><option value="0">不限</option></select></div>
+            <div class="field"><label>链接有效期</label><select class="select" name="hours"><option value="24">1 天</option><option value="72" selected>3 天</option><option value="168">7 天</option><option value="720">30 天</option><option value="0">长期</option></select></div>
+          </div>
+          <div class="field"><label>新账户有效期</label><select class="select" name="days" style="max-width:240px"><option value="0">长期</option><option value="7">7 天</option><option value="30">30 天</option><option value="90">90 天</option></select></div>
+        </div>
+        <div class="field-error" id="invErr" hidden></div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="invSave">创建</button>`,
+  });
+  const paint = () => {
+    const g = groups.find((x) => x.id === Number($('[name="gid"]', m.root).value));
+    $('#invSummary', m.root).innerHTML = g ? `<div class="field-hint" style="margin-bottom:6px">${esc(g.description || '')}</div>${capsSummary(g.caps)}` : '';
+    if (g?.builtin === 'restricted' && $('[name="days"]', m.root).value === '0') $('[name="days"]', m.root).value = '30';
+  };
+  paint();
+  $('[name="gid"]', m.root).addEventListener('change', paint);
+  $('#invSave', m.root).addEventListener('click', async () => {
+    try {
+      const r = await api('/api/access-tokens', {
+        method: 'POST',
+        body: {
+          kind: 'invite',
+          label: $('[name="label"]', m.root).value.trim(),
+          group_id: Number($('[name="gid"]', m.root).value),
+          domain_ids: domains.filter((d) => $(`[name="dom_${d.id}"]`, m.root)?.checked).map((d) => d.id),
+          max_uses: Number($('[name="uses"]', m.root).value),
+          expires_in_hours: Number($('[name="hours"]', m.root).value),
+          account_days: Number($('[name="days"]', m.root).value),
+        },
+      });
+      m.close();
+      showTokenUrl('邀请链接已创建', r.url, '链接只显示这一次。对方打开后自己设置用户名和密码。');
+      onDone?.();
+    } catch (err) {
+      $('#invErr', m.root).textContent = err.message;
+      $('#invErr', m.root).hidden = false;
+    }
+  });
+}
+
+routes['/access'] = {
+  title: '邀请与登录链接',
+  key: 'access',
+  need: () => can.users(),
+  async render(content, topActions) {
+    topActions.innerHTML = `<button class="btn btn-secondary" id="newLogin">${I.ticket} 登录链接</button><button class="btn btn-primary" id="newInvite">${I.plus} 邀请链接</button>`;
+    content.innerHTML = `
+      <div class="card">
+        <div class="toolbar">
+          <div class="seg"><button data-kind="invite" class="${accessState.kind === 'invite' ? 'on' : ''}">邀请链接</button><button data-kind="login" class="${accessState.kind === 'login' ? 'on' : ''}">登录链接</button></div>
+          <div class="spacer"></div>
+          <span class="dim" style="font-size:12.5px" id="accessHint"></span>
+        </div>
+        <div id="accessList"></div>
+      </div>`;
+    async function load() {
+      const box = $('#accessList');
+      $('#accessHint').textContent = accessState.kind === 'invite' ? '对方用邀请链接自己注册账户' : '打开即以指定账户登录，无需密码';
+      box.innerHTML = skeletonHtml(3);
+      let data;
+      try {
+        data = await api(`/api/access-tokens?kind=${accessState.kind}`);
+      } catch (err) {
+        box.innerHTML = `<div style="padding:16px">${errorHtml(err)}</div>`;
+        return;
+      }
+      if (!data.items.length) {
+        box.innerHTML = emptyHtml('ticket', accessState.kind === 'invite' ? '还没有邀请链接' : '还没有登录链接', accessState.kind === 'invite' ? '创建邀请链接，让别人自己注册到指定用户组' : '给某个成员创建登录链接，对方点开就能登录');
+        return;
+      }
+      box.innerHTML = `
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>链接</th><th>${accessState.kind === 'invite' ? '用户组' : '账户'}</th><th class="num">已使用</th><th>有效期</th><th>状态</th><th class="w-actions"></th></tr></thead>
+          <tbody>${data.items.map((t) => `
+            <tr>
+              <td class="cell-main"><b>${esc(t.label || '未命名')}</b><div class="cell-sub" style="font-family:var(--mono)">${esc(t.prefix)}…${t.creator ? ` · ${esc(t.creator)} 创建` : ''}</div></td>
+              <td class="clean">${accessState.kind === 'invite' ? `<span class="badge badge-gray">${esc(t.group?.name || '—')}</span>${t.account_days ? `<div class="cell-sub">账户 ${t.account_days} 天</div>` : ''}` : esc(t.user?.username || '—')}</td>
+              <td data-th="已使用" class="num">${t.uses}${t.max_uses ? ` / ${t.max_uses}` : ''}</td>
+              <td data-th="有效期" class="nowrap dim">${t.expires_at ? fmtDate(t.expires_at) : '长期'}</td>
+              <td class="clean">${tokenStatusHtml(t)}</td>
+              <td class="cell-actions"><div class="row-actions">${t.status === 'active' ? `<button class="btn btn-secondary btn-sm" data-revoke="${t.id}">撤销</button>` : ''}</div></td>
+            </tr>`).join('')}
+          </tbody></table></div>`;
+      $$('[data-revoke]', box).forEach((b) => b.addEventListener('click', async () => {
+        const ok = await confirmDialog({ title: '撤销链接', message: '撤销后这个链接立即失效。已经用它注册或登录的账户不受影响。', okText: '撤销', danger: true });
+        if (!ok) return;
+        await api(`/api/access-tokens/${b.dataset.revoke}`, { method: 'DELETE' }).catch((e) => toast(e.message, 'err'));
+        toast('已撤销');
+        load();
+      }));
+    }
+    $$('[data-kind]', content).forEach((b) => b.addEventListener('click', () => {
+      accessState.kind = b.dataset.kind;
+      $$('[data-kind]', content).forEach((x) => x.classList.toggle('on', x === b));
+      load();
+    }));
+    $('#newInvite').addEventListener('click', () => openInviteModal(() => {
+      accessState.kind = 'invite';
+      render();
+    }));
+    $('#newLogin').addEventListener('click', () => openLoginLinkModal(null, () => {
+      accessState.kind = 'login';
+      render();
+    }));
+    load();
+  },
+};
+
+/* ---------------- audit log ---------------- */
+
+const AUDIT_LABELS = {
+  'login.password': '密码登录',
+  'login.passkey': '通行密钥登录',
+  'login.link': '登录链接登录',
+  'login.failed': '登录失败',
+  'password.change': '修改密码',
+  'user.create': '创建用户',
+  'user.update': '修改用户',
+  'user.delete': '删除用户',
+  'user.freeze': '冻结账户',
+  'user.unfreeze': '解除冻结',
+  'group.create': '创建用户组',
+  'group.update': '修改用户组',
+  'group.delete': '删除用户组',
+  'invite.create': '创建邀请链接',
+  'invite.revoke': '撤销邀请链接',
+  'invite.use': '通过邀请注册',
+  'login_link.create': '创建登录链接',
+  'login_link.revoke': '撤销登录链接',
+  'domain.create': '绑定域名',
+  'domain.update': '修改域名',
+  'domain.delete': '删除域名',
+  'settings.update': '修改设置',
+  'maintenance.run': '立即清理',
+  'note.view_content': '查看密信内容',
+  'note.burn': '销毁他人密信',
+  'note.delete': '删除他人密信',
+  'link.delete': '删除他人短链',
+  'key.revoke': '吊销他人密钥',
+};
+
+routes['/audit'] = {
+  title: '操作日志',
+  key: 'audit',
+  need: () => can.users(),
+  async render(content) {
+    const state = { page: 1 };
+    content.innerHTML = `<div class="card"><div id="auditBox"></div></div>`;
+    async function load() {
+      const box = $('#auditBox');
+      box.innerHTML = skeletonHtml(5);
+      let data;
+      try {
+        data = await api(`/api/audit?page=${state.page}`);
+      } catch (err) {
+        box.innerHTML = `<div style="padding:16px">${errorHtml(err)}</div>`;
+        return;
+      }
+      if (!data.items.length) {
+        box.innerHTML = emptyHtml('scroll', '还没有记录', '登录、账户和管理操作会记录在这里');
+        return;
+      }
+      box.innerHTML = `
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>详情</th><th class="hide-md">IP</th></tr></thead>
+          <tbody>${data.items.map((a) => {
+            const bad = ['login.failed', 'user.freeze', 'note.view_content'].includes(a.action);
+            return `<tr>
+              <td class="nowrap dim cell-main">${fmtDate(a.ts)}</td>
+              <td class="clean">${esc(a.actor_name || (a.actor_id ? `#${a.actor_id}` : '—'))}</td>
+              <td class="clean"><span class="badge ${bad ? 'badge-orange' : 'badge-gray'}">${esc(AUDIT_LABELS[a.action] || a.action)}</span></td>
+              <td class="dim cell-block"><div class="truncate" style="max-width:360px" title="${esc(a.detail)}">${esc(a.detail || '')}</div></td>
+              <td class="dim hide-md"><span class="mono-num">${esc(a.ip || '')}</span></td>
+            </tr>`;
+          }).join('')}</tbody></table></div>
+        ${pagerHtml(data.page, data.per_page, data.total)}`;
+      $$('[data-page]', box).forEach((b) => b.addEventListener('click', () => {
+        state.page = Number(b.dataset.page);
+        load();
+      }));
+    }
+    load();
+  },
+};
 
 /* ---------------- api keys ---------------- */
 
@@ -1525,7 +2848,7 @@ routes['/keys'] = {
   title: 'API 密钥',
   key: 'keys',
   async render(content, topActions) {
-    const canApi = me.role === 'admin' || me.perms?.use_api;
+    const canApi = !!me.caps?.api?.use;
     topActions.innerHTML =
       `<a class="btn btn-secondary" href="/docs" target="_blank">${I.doc} API 文档</a>` +
       (canApi ? `<button class="btn btn-primary" id="addKeyBtn">${I.plus} 创建密钥</button>` : '');
@@ -1551,7 +2874,7 @@ routes['/keys'] = {
       content.innerHTML = `
         <div class="card">
           <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>名称</th><th>权限</th><th>最近使用</th><th>过期</th>${me.role === 'admin' ? '<th class="hide-md">所有者</th>' : ''}<th class="w-actions"></th></tr></thead>
+          <thead><tr><th>名称</th><th>权限</th><th>最近使用</th><th>过期</th>${can.users() ? '<th class="hide-md">所有者</th>' : ''}<th class="w-actions"></th></tr></thead>
           <tbody>
             ${data.items
               .map((k) => `
@@ -1560,7 +2883,7 @@ routes['/keys'] = {
               <td class="clean cell-block"><div class="chip-row">${k.scopes.map((s) => `<span class="badge badge-gray">${esc(s)}</span>`).join('')}</div></td>
               <td data-th="最近使用" class="nowrap dim">${k.last_used_at ? fmtRelative(k.last_used_at) : '从未'}</td>
               <td data-th="过期" class="nowrap dim">${k.expires_at ? (k.expires_at < Date.now() ? '<span class="status bad">已过期</span>' : fmtDate(k.expires_at, false)) : '永不过期'}</td>
-              ${me.role === 'admin' ? `<td class="dim hide-md">${esc(k.owner?.username || '—')}${k.mine ? ' <span class="badge badge-blue">我</span>' : ''}</td>` : ''}
+              ${can.users() ? `<td class="dim hide-md">${esc(k.owner?.username || '—')}${k.mine ? ' <span class="badge badge-blue">我</span>' : ''}</td>` : ''}
               <td class="cell-actions"><div class="row-actions">
                 <button class="icon-btn danger" data-kdel="${k.id}" title="吊销" aria-label="吊销">${I.trash}</button>
               </div></td>
@@ -1602,7 +2925,7 @@ function openKeyEditor(onSaved) {
         <div class="field"><label>名称</label><input class="input" name="name" placeholder="例如：自动化脚本" maxlength="60"></div>
         <div class="field"><label>权限范围</label>
           <div class="check-list">
-            ${SCOPES.map((s) => `<label class="check-row"><input type="checkbox" name="sc_${s.value}" ${s.value === 'links:write' ? '' : 'checked'}><span>${s.label}</span><code class="sub">${s.value}</code></label>`).join('')}
+            ${SCOPES.filter((s) => (me.caps?.api?.scopes || []).includes(s.value)).map((s) => `<label class="check-row"><input type="checkbox" name="sc_${s.value}" ${s.value === 'links:write' ? '' : 'checked'}><span>${s.label}</span><code class="sub">${s.value}</code></label>`).join('')}
           </div>
         </div>
         <div class="field"><label>有效期</label>
@@ -1623,7 +2946,7 @@ function openKeyEditor(onSaved) {
   $('#keySave', m.root).addEventListener('click', async () => {
     const errEl = $('#keyErr', m.root);
     errEl.hidden = true;
-    const scopes = SCOPES.filter((s) => $(`[name="sc_${s.value}"]`, m.root).checked).map((s) => s.value);
+    const scopes = SCOPES.filter((s) => $(`[name="sc_${s.value}"]`, m.root)?.checked).map((s) => s.value);
     try {
       const created = await api('/api/keys', {
         method: 'POST',
@@ -1663,7 +2986,7 @@ function settingRow(title, desc, control) {
 routes['/settings'] = {
   title: '设置',
   key: 'settings',
-  adminOnly: true,
+  need: () => can.settings(),
   narrow: true,
   async render(content) {
     let data;
@@ -1710,8 +3033,8 @@ routes['/settings'] = {
           <div><dt>用户</dt><dd>${fmtNum(c.users)}<small>位</small></dd></div>
           <div><dt>短链接</dt><dd>${fmtNum(c.links)}<small>条</small></dd></div>
           <div><dt>访问记录</dt><dd>${fmtNum(c.logs)}<small>条</small></dd></div>
+          <div><dt>进行中的密信</dt><dd>${fmtNum(c.notes)}<small>封</small></dd></div>
           <div><dt>API 密钥</dt><dd>${fmtNum(c.keys)}<small>个</small></dd></div>
-          <div><dt>通行密钥</dt><dd>${fmtNum(c.passkeys)}<small>个</small></dd></div>
         </dl>
       </div>`;
 
@@ -1762,11 +3085,13 @@ routes['/profile'] = {
   narrow: true,
   async render(content) {
     const admin = me.role === 'admin';
+    const adminScopes = [['users', '用户'], ['domains', '域名'], ['settings', '设置'], ['content', '全部内容']].filter(([k]) => me.admin_perms?.[k]).map(([, l]) => l);
     content.innerHTML = `
       <div class="card">
-        <div class="card-head"><h3>账户</h3></div>
-        ${settingRow('用户名', admin ? '管理员 · 全部权限' : `成员 · 配额 ${me.quota_max_links ? fmtNum(me.quota_max_links) + ' 条' : '不限'} · ${Array.isArray(me.domain_ids) ? me.domain_ids.length : '全部'} 个域名`, `<input class="input" value="${esc(me.username)}" disabled>`)}
+        <div class="card-head"><h3>账户</h3><span class="badge ${admin ? 'badge-blue' : 'badge-gray'}">${esc(roleLabel(me))}</span>${me.expires_at ? `<div class="right">${fmtDate(me.expires_at)} 到期</div>` : ''}</div>
+        ${settingRow('用户名', admin ? (me.is_owner ? '拥有全部权限' : `可管理：${adminScopes.join('、') || '无'}`) : `${Array.isArray(me.domain_ids) ? me.domain_ids.length : '全部'} 个可用域名`, `<input class="input" value="${esc(me.username)}" disabled>`)}
         ${settingRow('显示名称', '显示在侧边栏与列表中', `<div class="input-row"><input class="input" id="pfName" value="${esc(me.display_name || '')}" maxlength="60"><button class="btn btn-secondary" id="pfNameSave">保存</button></div>`)}
+        ${admin ? '' : `<div class="setting-row"><div class="txt"><b>我的权限</b><span>由管理员设置</span></div><div class="ctl" style="justify-content:flex-start">${capsSummary(me.caps)}</div></div>`}
       </div>
 
       <div class="card">

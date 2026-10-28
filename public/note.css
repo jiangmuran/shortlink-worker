@@ -59,6 +59,7 @@
   border-radius: 18px; box-shadow: var(--nt-shadow); padding: 24px 24px 18px;
   display: flex; flex-direction: column; gap: 18px; position: relative; overflow: hidden;
 }
+.nt-stage { display: flex; flex-direction: column; gap: 14px; }
 .nt-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .nt-av { width: 38px; height: 38px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; background: var(--nt-soft); color: var(--nt-accent); }
 .nt-title { font-size: 18px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
@@ -105,6 +106,7 @@
 .nt-content hr { border: none; border-top: 1px dashed var(--nt-border); margin: 1.2em 0; }
 .nt-caret::after { content: '▍'; animation: nt-blink 1s steps(1) infinite; opacity: 0.6; }
 @keyframes nt-blink { 50% { opacity: 0; } }
+.nt-stage .nt-content.nt-window { font-size: 28px; line-height: 1.4; }
 .nt-window { min-height: 120px; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 28px; letter-spacing: 0.06em; white-space: pre; font-weight: 500; }
 .nt-progress { height: 3px; border-radius: 3px; background: var(--nt-soft); overflow: hidden; }
 .nt-progress i { display: block; height: 100%; background: var(--nt-accent); width: 0; transition: width 0.2s linear; }
@@ -123,7 +125,7 @@
 
 @media (max-width: 480px) {
   .nt-card { padding: 20px 18px 16px; border-radius: 16px; }
-  .nt-window { font-size: 24px; }
+  .nt-stage .nt-content.nt-window { font-size: 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .nt-caret::after, .nt-spin { animation: none; }

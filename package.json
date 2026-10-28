@@ -8,7 +8,9 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply shortlink --local",
-    "db:migrate": "wrangler d1 migrations apply shortlink --remote"
+    "db:migrate": "wrangler d1 migrations apply shortlink --remote",
+    "test:api": "node tests/api.test.mjs",
+    "test:ui": "node tests/ui.test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.42.0"
