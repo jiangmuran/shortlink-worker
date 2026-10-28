@@ -29,6 +29,11 @@ const SCHEMA = {
     max_ttl_hours: ['int', 0, 87_600],
     max_kb: ['int', 1, 64],
   },
+  rooms: {
+    create: ['bool'],
+    max: ['int', 0, 100000],
+    max_members: ['int', 2, 1000],
+  },
   logs: {
     view: ['bool'],
     ip: ['enum', ['full', 'masked', 'none']],
@@ -46,6 +51,7 @@ const SCHEMA = {
 export const FULL_CAPS = {
   links: { create: true, max: 0, daily: 0, custom_code: true, min_code_len: 1, modes: [...LINK_MODES], edit_target: true },
   notes: { create: true, max_active: 0, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64 },
+  rooms: { create: true, max: 0, max_members: 500 },
   logs: { view: true, ip: 'full', export: true },
   api: { use: true, scopes: [...ALL_SCOPES] },
   rate: { per_minute: 0 },
@@ -55,6 +61,7 @@ export const FULL_CAPS = {
 export const FALLBACK_CAPS = {
   links: { create: true, max: 100, daily: 0, custom_code: true, min_code_len: 5, modes: [...LINK_MODES], edit_target: true },
   notes: { create: true, max_active: 50, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64 },
+  rooms: { create: true, max: 5, max_members: 50 },
   logs: { view: true, ip: 'full', export: true },
   api: { use: true, scopes: ['links:read', 'links:write', 'domains:read'] },
   rate: { per_minute: 30 },

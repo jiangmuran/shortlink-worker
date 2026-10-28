@@ -208,3 +208,29 @@ export function renderNotePage(data) {
 </body>
 </html>`;
 }
+
+// Chat room page shell — loads the client which connects over WebSocket.
+export function renderRoomPage(data) {
+  const theme = (data.theme && data.theme.name) || 'min';
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  const title = data.site ? `${escapeHtml(data.site)} · 聊天室` : '聊天室';
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>${title}</title>
+<link rel="icon" href="${FAVICON}">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="/_sl/note.css">
+<link rel="stylesheet" href="/_sl/chat.css">
+</head>
+<body class="nt-body nt-${escapeHtml(theme)} rm-body">
+<main id="room-root" class="rm-root"><div class="rm-loading">连接中…</div></main>
+<script type="application/json" id="room-data">${json}</script>
+<script>(function(){var b=function(e){e.preventDefault()};document.addEventListener('contextmenu',b);document.addEventListener('copy',b);document.addEventListener('cut',b);document.addEventListener('selectstart',b)})();</script>
+<script type="module" src="/_sl/chat.js"></script>
+</body>
+</html>`;
+}

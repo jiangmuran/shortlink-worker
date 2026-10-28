@@ -272,7 +272,7 @@ export function mountNote(root, data, opts = {}) {
   };
 }
 
-function displayParams(d) {
+export function displayParams(d) {
   const p = {};
   if (d.mode === 'motion') {
     if (d.mspeed) p.speed = d.mspeed / 10;

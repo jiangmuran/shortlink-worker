@@ -279,6 +279,47 @@ const auditText = await page.textContent('#auditBox');
 ok('audit shows freeze & invite', auditText.includes('冻结账户') && auditText.includes('通过邀请注册'));
 await shot(page, 'audit');
 
+// ---------- chat room: create, two clients, E2E message on canvas ----------
+await page.goto(`${BASE}/rooms`);
+await page.waitForSelector('#newRoomBtn');
+await page.click('#newRoomBtn');
+await page.waitForSelector('#rPreview .rm-body canvas');
+await page.fill('[name="label"]', '周末计划');
+await page.click('[data-rmode="motion"]');
+await page.selectOption('[name="disappear"]', '0');
+await page.click('#roomSave');
+await page.waitForSelector('text=聊天室已创建');
+const roomUrl = (await page.textContent('.note-url')).trim();
+ok('room url carries key', /^https:\/\/s\.localhost\/[A-Za-z0-9]+#k=[A-Za-z0-9_-]{40,}$/.test(roomUrl), roomUrl);
+await page.click('.modal-overlay .modal-head [data-close]');
+const roomVisit = roomUrl.replace('https://s.localhost', SHORT);
+
+async function joinRoom(label, nick) {
+  const { ctx, page: rp } = await newPage(label);
+  await rp.goto(roomVisit);
+  await rp.waitForSelector('#joinForm');
+  await rp.fill('[name="nick"]', nick);
+  await rp.click('#joinForm button[type="submit"]');
+  await rp.waitForSelector('.rm-shell', { timeout: 8000 });
+  return { ctx, rp };
+}
+const { ctx: ca, rp: alice } = await joinRoom('alice', '小林');
+const { ctx: cb, rp: bob } = await joinRoom('bob', '阿杰');
+await alice.waitForFunction(() => document.querySelectorAll('.rm-member').length >= 2, { timeout: 8000 });
+ok('member list shows both', (await alice.locator('.rm-member').count()) >= 2);
+ok('member device visible', (await alice.textContent('.rm-panel-list')).includes('设备'));
+ok('member ip hidden by default', !(await alice.textContent('.rm-panel-list')).includes('IP'));
+// bob sends; alice receives on canvas, plaintext not in DOM
+await bob.fill('#rmInput', '约在二楼靠窗');
+await bob.click('#rmSend');
+await alice.waitForSelector('.rm-msg .rm-body canvas', { timeout: 8000 });
+await alice.waitForTimeout(500);
+ok('message rendered on canvas', await canvasHasContent(alice, '.rm-msg .rm-body canvas'));
+ok('chat plaintext not in DOM', !(await alice.content()).includes('约在二楼靠窗'));
+await shot(alice, 'chat-room');
+await ca.close();
+await cb.close();
+
 // ---------- mobile smoke ----------
 const { page: mob } = await newPage('mobile', { viewport: { width: 390, height: 844 } });
 await mob.goto(visitUrl);

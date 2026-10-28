@@ -2,7 +2,7 @@
 // interstitial or confirmation page, with access logging.
 
 import { getSettings } from './auth.js';
-import { renderPageRedirect, renderConfirmPage, renderStatusPage, renderLanding, renderNotePage } from './pages.js';
+import { renderPageRedirect, renderConfirmPage, renderStatusPage, renderLanding, renderNotePage, renderRoomPage } from './pages.js';
 import { noteStatus } from './api-notes.js';
 import { safeParseJson } from './util.js';
 
@@ -66,6 +66,24 @@ export async function handleRedirect(req, env, ctx, domain) {
 
   if (link.kind === 'note') {
     return notePage(req, env, ctx, link, settings, domain);
+  }
+  if (link.kind === 'room') {
+    const room = await env.DB.prepare('SELECT type, policy, access, destroyed_at FROM rooms WHERE link_id = ?').bind(link.id).first();
+    const policy = safeParseJson(room?.policy, {});
+    const data = {
+      code: link.code,
+      host: domain.hostname,
+      site: settings.site_name,
+      status: !room || room.destroyed_at ? 'destroyed' : link.enabled ? 'open' : 'closed',
+      type: room?.type || 'group',
+      theme: safeParseJson(room ? room.policy : '{}', {}).theme || { name: 'min' },
+      needs_password: !!safeParseJson(room?.access, {}).pw_hash,
+      login_required: !!safeParseJson(room?.access, {}).login_required,
+      policy: { display: policy.display, disappear: policy.disappear, hold: policy.hold, hide_on_blur: policy.hide_on_blur, visible: policy.visible, features: policy.features, type: room?.type },
+    };
+    return new Response(renderRoomPage(data), {
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow' },
+    });
   }
 
   if (!link.enabled) {

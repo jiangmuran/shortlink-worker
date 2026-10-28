@@ -2,7 +2,8 @@
    ShortLink console SPA — vanilla JS, no dependencies
    ============================================================ */
 
-import { NOTE_THEMES, SECURE_MODES, encryptNote, mountNote, fmtDuration } from '/note.js';
+import { NOTE_THEMES, SECURE_MODES, encryptNote, mountNote, fmtDuration, displayParams } from '/note.js';
+import { SecureText } from '/secure-render.js';
 
 /* ---------------- tiny helpers ---------------- */
 
@@ -109,6 +110,7 @@ const I = (() => {
     people: wrap('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3c2.1.7 3.5 2.8 3.5 5.7"/>'),
     ticket: wrap('<path d="M3 8a2 2 0 0 0 2-2h14a2 2 0 0 0 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 0-2 2H5a2 2 0 0 0-2-2v-2a2 2 0 0 0 0-4z"/><path d="M13 6v12" stroke-dasharray="2 2"/>'),
     scroll: wrap('<path d="M8 21h11a2 2 0 0 0 2-2v-1H10v1a2 2 0 0 1-4 0V5a2 2 0 0 0-2-2h12a2 2 0 0 1 2 2v13"/><path d="M10 8h5M10 12h5"/>'),
+    chat: wrap('<path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3c-1.3 0-2.6-.3-3.7-.8L3 20.5l1.6-4.3A8 8 0 0 1 3.5 11.5 8.4 8.4 0 0 1 12 3.2a8.4 8.4 0 0 1 9 8.3z"/>'),
     flame: wrap('<path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.8 1 2.8 2 3.3-.5-3 .3-6.3 1-8.8z"/>'),
     lock: wrap('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
     snow: wrap('<path d="M12 2v20M4.9 6.5l14.2 11M19.1 6.5 4.9 17.5"/><path d="m9 4 3 2 3-2M9 20l3-2 3 2"/>'),
@@ -293,6 +295,7 @@ const can = {
   anyAdmin: () => Object.values(me?.admin_perms || {}).some(Boolean),
   links: () => !!me?.caps?.links?.create,
   notes: () => !!me?.caps?.notes?.create || can.content(),
+  rooms: () => !!me?.caps?.rooms?.create || can.content(),
   logs: () => !!me?.caps?.logs?.view,
   api: () => !!me?.caps?.api?.use || can.users(),
 };
@@ -307,6 +310,7 @@ const NAV = [
   { path: '/', label: '概览', icon: 'house' },
   { path: '/links', label: '短链接', icon: 'link' },
   { path: '/notes', label: '密信', icon: 'flame', show: () => can.notes() },
+  { path: '/rooms', label: '聊天室', icon: 'chat', show: () => can.rooms() },
   { path: '/domains', label: '域名', icon: 'globe' },
   { path: '/logs', label: '访问记录', icon: 'clock', show: () => can.content() },
   { section: '管理', show: () => can.users() || can.settings() },
@@ -1562,6 +1566,7 @@ function openNoteComposer(domains, onSaved) {
   const m = openModal({
     title: '写密信',
     xwide: true,
+    onClose: () => viewer?.destroy(),
     body: `
       <div class="composer">
         <form class="composer-form" novalidate>
@@ -1862,6 +1867,317 @@ function showNoteCreated(item, url, e2e) {
   });
   $('#copyNoteUrl', r.root).addEventListener('click', async () => (await copyText(url)) && toast('已复制'));
 }
+
+/* ---------------- chat rooms ---------------- */
+
+const ROOM_TYPE_LABEL = { dm: '单聊', group: '群聊', burn: '焰信' };
+const ROOM_TYPES = [
+  { id: 'dm', label: '单聊', hint: '2 人，满员锁定' },
+  { id: 'group', label: '群聊', hint: '多人，可设人数上限' },
+  { id: 'burn', label: '焰信', hint: '服务器不存消息，读完即逝' },
+];
+
+function roomKeyUrl(id) { return recalledNoteUrl('r' + id); }
+function rememberRoomUrl(id, url) { rememberNoteUrl('r' + id, url); }
+
+routes['/rooms'] = {
+  title: '聊天室',
+  key: 'rooms',
+  need: () => can.rooms(),
+  async render(content, topActions) {
+    const canCreate = !!me.caps?.rooms?.create;
+    topActions.innerHTML = canCreate ? `<button class="btn btn-primary" id="newRoomBtn">${I.plus} 创建聊天室</button>` : '';
+    let domains = [];
+    try {
+      domains = (await api('/api/domains')).items.filter((d) => d.can_use);
+    } catch {}
+    const openComposer = () => openRoomComposer(domains, load);
+    $('#newRoomBtn')?.addEventListener('click', openComposer);
+    content.innerHTML = `<div class="card"><div id="roomsList"></div></div>`;
+
+    async function load() {
+      const box = $('#roomsList');
+      box.innerHTML = skeletonHtml(3);
+      let data;
+      try {
+        data = await api('/api/rooms');
+      } catch (err) {
+        box.innerHTML = `<div style="padding:16px">${errorHtml(err)}</div>`;
+        return;
+      }
+      if (!data.items.length) {
+        box.innerHTML = emptyHtml('chat', '还没有聊天室', '创建一个用链接拉起的实时聊天，消息端到端加密', canCreate ? `<div><button class="btn btn-primary" id="emptyRoom">${I.plus} 创建聊天室</button></div>` : '');
+        $('#emptyRoom')?.addEventListener('click', openComposer);
+        return;
+      }
+      box.innerHTML = `
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>聊天室</th><th>类型</th><th>状态</th><th>消息显示</th><th>创建</th><th class="w-actions"></th></tr></thead>
+          <tbody>${data.items.map((rm) => {
+            const p = rm.policy || {};
+            const disp = SECURE_MODES.find((x) => x.id === (p.display?.mode))?.label || '直接显示';
+            return `<tr>
+              <td class="cell-main"><span class="mono-num"><span class="dim">${esc(rm.domain.hostname)}/</span>${esc(rm.code)}</span><div class="cell-sub truncate">${esc(rm.label || '（无备注）')}</div></td>
+              <td class="clean"><span class="badge badge-gray">${ROOM_TYPE_LABEL[rm.type] || rm.type}</span></td>
+              <td class="clean">${rm.room_status === 'destroyed' ? '<span class="status">已结束</span>' : rm.room_status === 'closed' ? '<span class="status">已关闭</span>' : '<span class="status ok">进行中</span>'}</td>
+              <td class="dim hide-md">${esc(disp)}${p.disappear ? ` · 阅后 ${p.disappear}s` : ''}</td>
+              <td data-th="创建" class="nowrap dim">${fmtRelative(rm.created_at)}${can.content() && rm.owner && rm.owner.id !== me.id ? `<div class="cell-sub">${esc(rm.owner.username)}</div>` : ''}</td>
+              <td class="cell-actions"><div class="row-actions">
+                ${rm.room_status === 'open' ? `<a class="icon-btn" href="${esc(rm.url)}${roomKeyUrl(rm.id) ? '' : ''}" title="进入" aria-label="进入" data-enter="${rm.id}">${I.external}</a>` : ''}
+                <button class="icon-btn" data-rmenu="${rm.id}" title="更多" aria-label="更多">${I.dots}</button>
+              </div></td>
+            </tr>`;
+          }).join('')}</tbody></table></div>`;
+      const byId = new Map(data.items.map((rm) => [String(rm.id), rm]));
+      $$('[data-enter]', box).forEach((a) => a.addEventListener('click', (e) => {
+        const rm = byId.get(a.dataset.enter);
+        const full = roomKeyUrl(rm.id);
+        if (full) { a.href = full; }
+      }));
+      $$('[data-rmenu]', box).forEach((b) => b.addEventListener('click', () => {
+        const rm = byId.get(b.dataset.rmenu);
+        openMenu(b, [
+          ...(rm.room_status === 'open' ? [{ label: '复制邀请链接', icon: I.copy, action: () => copyRoomLink(rm) }] : []),
+          ...(rm.room_status === 'open' ? [{ label: '结束聊天室', icon: I.x, danger: true, action: async () => {
+            const ok = await confirmDialog({ title: '结束聊天室', message: '所有人会被断开连接，消息记录一并清除。链接将无法再进入。', okText: '结束', danger: true });
+            if (!ok) return;
+            try { await api(`/api/rooms/${rm.id}/destroy`, { method: 'POST' }); toast('已结束'); load(); } catch (err) { toast(err.message, 'err'); }
+          } }] : []),
+          { label: '删除', icon: I.trash, danger: true, action: async () => {
+            const ok = await confirmDialog({ title: '删除聊天室', message: '彻底删除这个聊天室及其短码，此操作不可撤销。', okText: '删除', danger: true });
+            if (!ok) return;
+            try { await api(`/api/rooms/${rm.id}`, { method: 'DELETE' }); toast('已删除'); load(); } catch (err) { toast(err.message, 'err'); }
+          } },
+        ]);
+      }));
+    }
+    load();
+  },
+};
+
+async function copyRoomLink(rm) {
+  const full = roomKeyUrl(rm.id);
+  if (full) return (await copyText(full)) && toast('已复制邀请链接');
+  openModal({
+    title: '无法复制完整链接',
+    body: `<p class="modal-text">这个聊天室是端到端加密的，房间密钥只在创建时显示过一次。只有创建它的那个浏览器里才能重新复制完整邀请链接。你可以结束它再重新创建一个。</p>`,
+    footer: '<button class="btn btn-primary" data-close>知道了</button>',
+  });
+}
+
+const DISAPPEAR_CHOICES = [[0, '不消失'], [10, '10 秒'], [30, '30 秒'], [60, '1 分钟'], [180, '3 分钟']];
+
+function openRoomComposer(domains, onSaved) {
+  if (!domains.length) return toast('还没有可用的短链域名，请联系管理员', 'err');
+  const caps = me.caps?.rooms || {};
+  const memberCap = caps.max_members || 1000;
+  const ipAllowed = (me.caps?.logs?.ip || 'full') === 'full';
+  const state = { type: 'group', mode: 'motion', theme: 'min' };
+
+  const m = openModal({
+    title: '创建聊天室',
+    xwide: true,
+    onClose: () => preview?.destroy(),
+    body: `
+      <div class="composer">
+        <form class="composer-form" novalidate>
+          <div class="form-section">
+            <div class="form-section-title">类型</div>
+            <div class="mode-cards" id="rtype">${ROOM_TYPES.map((t) => `<button type="button" class="mode-card${t.id === state.type ? ' on' : ''}" data-rt="${t.id}"><b>${t.label}</b><span class="dim" style="font-size:12px">${t.hint}</span></button>`).join('')}</div>
+            <div class="form-grid" style="margin-top:12px">
+              <div class="field" id="maxBox"><label>人数上限</label><input class="input" type="number" name="max_members" min="2" max="${memberCap}" value="${Math.min(20, memberCap)}"></div>
+              <div class="field"><label>备注 <span class="opt">只有你能看到</span></label><input class="input" name="label" maxlength="200" placeholder="例如：周末活动群"></div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">消息显示<span>决定对方看到的消息长什么样，改参数右侧即时预览</span></div>
+            <div class="mode-cards" id="rmode">${SECURE_MODES.map((x) => `<button type="button" class="mode-card${x.id === state.mode ? ' on' : ''}" data-rmode="${x.id}"><b>${x.label}${x.tag ? `<span class="mode-tag${x.anti ? ' anti' : ''}">${x.tag}</span>` : ''}</b></button>`).join('')}</div>
+            <div class="field-hint" id="rmodeDesc"></div>
+            <div class="subpanel" id="rmodeOpts"></div>
+            <label class="toggle-row"><div class="txt"><b>按住才显示</b></div><span class="switch"><input type="checkbox" name="hold"><i></i></span></label>
+            <label class="toggle-row"><div class="txt"><b>切出页面时隐藏</b></div><span class="switch"><input type="checkbox" name="hide_on_blur"><i></i></span></label>
+            <div class="field" style="margin-top:4px"><label>阅后消失</label>
+              <select class="select" name="disappear" style="max-width:220px">${DISAPPEAR_CHOICES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">消息保留<span>焰信不保存任何消息</span></div>
+            <select class="select" name="retain" style="max-width:260px" ${state.type === 'burn' ? 'disabled' : ''}>
+              <option value="0">不保留（离线收不到）</option>
+              <option value="30" selected>保留最近 30 条</option>
+              <option value="100">保留最近 100 条</option>
+              <option value="500">保留最近 500 条</option>
+            </select>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">成员互相可见</div>
+            <div class="check-list">
+              <label class="check-row"><input type="checkbox" name="v_device" checked><span>设备与浏览器</span></label>
+              <label class="check-row"><input type="checkbox" name="v_geo" checked><span>所在地区（国家 / 城市）</span></label>
+              <label class="check-row"><input type="checkbox" name="v_local_time"><span>当地时区</span></label>
+              <label class="check-row"><input type="checkbox" name="v_ip" ${ipAllowed ? '' : 'disabled'}><span>IP 地址${ipAllowed ? '' : '（当前账户不可开启）'}</span></label>
+              <label class="check-row"><input type="checkbox" name="v_typing" checked><span>正在输入</span></label>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">进入控制</div>
+            <div class="field"><label>房间密码 <span class="opt">可选</span></label><input class="input" name="password" type="text" autocomplete="off" placeholder="不设置"></div>
+            <label class="toggle-row"><div class="txt"><b>仅限本站已登录用户</b><span>未登录的人无法进入</span></div><span class="switch"><input type="checkbox" name="login_required"><i></i></span></label>
+          </div>
+
+          <div class="form-section">
+            <div class="form-section-title">链接</div>
+            <div class="field"><div class="joined">
+              <select class="select" name="domain_id">${domains.map((d) => `<option value="${d.id}">${esc(d.hostname)}</option>`).join('')}</select>
+              <span class="sep">/</span>
+              <input class="input mono" name="code" placeholder="留空随机生成" maxlength="64" autocapitalize="off" spellcheck="false">
+            </div></div>
+            <div class="field"><label>页面风格</label>
+              <div class="theme-picks">${NOTE_THEMES.map((t) => `<button type="button" class="theme-pick${t.id === state.theme ? ' on' : ''}" data-rtheme="${t.id}"><i style="background:${t.swatch}"></i>${t.label}</button>`).join('')}</div>
+            </div>
+          </div>
+          <div class="field-error" id="roomErr" hidden></div>
+        </form>
+        <aside class="composer-preview">
+          <div class="preview-label">一条消息的样子</div>
+          <div class="preview-phone"><div class="nt-scope nt-min" id="rPreviewScope" style="padding:18px"><div id="rPreview"></div></div></div>
+          <p class="field-hint" style="text-align:center">端到端加密，服务器只转发密文</p>
+        </aside>
+      </div>`,
+    footer: `<button class="btn btn-secondary" data-close>取消</button><button class="btn btn-primary" id="roomSave">${I.chat} 创建并生成链接</button>`,
+  });
+  const root = m.root;
+  const val = (n) => $(`[name="${n}"]`, root);
+
+  const slider = (name, label, min, max, step, def, fmt) =>
+    `<div class="slider-row"><label>${label}<b data-out="${name}"></b></label><input type="range" name="${name}" min="${min}" max="${max}" step="${step}" value="${def}" data-fmt="${fmt || ''}"></div>`;
+  function modeOptsHtml() {
+    const mm = state.mode;
+    if (mm === 'motion') return slider('mspeed', '滚动速度', 3, 30, 1, 10, 'x10') + slider('contrast', '对比度', 20, 100, 1, 88, 'pct');
+    if (mm === 'comp') return slider('contrast', '对比度', 20, 100, 1, 34, 'pct') + slider('interval', '翻转间隔', 1, 6, 1, 1, 'frame');
+    if (mm === 'type') return slider('chunk', '每次出现', 1, 10, 1, 2, 'char') + slider('speed', '间隔', 40, 400, 10, 120, 'ms');
+    if (mm === 'window') return slider('window', '同时显示', 2, 14, 1, 6, 'char') + slider('speed', '间隔', 80, 600, 10, 220, 'ms');
+    if (mm === 'countdown') return slider('seconds', '显示时长', 3, 120, 1, 30, 'sec');
+    return '<p class="field-hint">打开即显示全文。</p>';
+  }
+  function paintOuts() {
+    $$('[data-out]', root).forEach((out) => {
+      const inp = val(out.dataset.out); if (!inp) return;
+      const v = Number(inp.value), f = inp.dataset.fmt;
+      out.textContent = f === 'x10' ? (v / 10).toFixed(1) + '×' : f === 'pct' ? v + '%' : f === 'char' ? v + ' 字' : f === 'ms' ? v + 'ms' : f === 'sec' ? v + ' 秒' : f === 'frame' ? v + ' 帧' : v;
+    });
+  }
+  function readDisplay() {
+    const num = (n, d) => (val(n) ? Number(val(n).value) : d);
+    return {
+      mode: state.mode,
+      mspeed: num('mspeed', 10), contrast: num('contrast', state.mode === 'comp' ? 34 : 88),
+      interval: num('interval', 1), chunk: num('chunk', 2),
+      window: num('window', 6), speed: num('speed', state.mode === 'window' ? 220 : 120), seconds: num('seconds', 30),
+    };
+  }
+
+  let preview = null;
+  function paintPreview() {
+    const scope = $('#rPreviewScope', root);
+    scope.className = `nt-scope nt-${state.theme}`;
+    preview?.destroy();
+    const host = $('#rPreview', root);
+    host.innerHTML = `<div class="rm-msg"><span class="rm-av" style="--c:#6b7cff">小</span><div class="rm-bubble"><div class="rm-who">小林</div><div class="rm-body"></div><div class="rm-time">20:41</div></div></div>`;
+    preview = new SecureText($('.rm-body', host), { mode: state.mode, params: displayParams(readDisplay()), accent: '#6b7cff' });
+    preview.setText('到了吗？我在二楼靠窗的位置');
+  }
+  const repaint = debounce(paintPreview, 200);
+  function paintMode() {
+    $('#rmodeDesc', root).textContent = SECURE_MODES.find((x) => x.id === state.mode)?.desc || '';
+    $('#rmodeOpts', root).innerHTML = modeOptsHtml();
+    paintOuts();
+  }
+
+  $$('[data-rt]', root).forEach((b) => b.addEventListener('click', () => {
+    state.type = b.dataset.rt;
+    $$('[data-rt]', root).forEach((x) => x.classList.toggle('on', x === b));
+    $('#maxBox', root).style.display = state.type === 'dm' ? 'none' : '';
+    val('retain').disabled = state.type === 'burn';
+    if (state.type === 'burn') val('retain').value = '0';
+  }));
+  $$('[data-rmode]', root).forEach((b) => b.addEventListener('click', () => {
+    state.mode = b.dataset.rmode;
+    $$('[data-rmode]', root).forEach((x) => x.classList.toggle('on', x === b));
+    paintMode();
+    paintPreview();
+  }));
+  $$('[data-rtheme]', root).forEach((b) => b.addEventListener('click', () => {
+    state.theme = b.dataset.rtheme;
+    $$('[data-rtheme]', root).forEach((x) => x.classList.toggle('on', x === b));
+    paintPreview();
+  }));
+  root.querySelector('.composer-form').addEventListener('input', (e) => { if (e.target.type === 'range') paintOuts(); repaint(); });
+  paintMode();
+  paintPreview();
+
+  $('#roomSave', root).addEventListener('click', async (ev) => {
+    const errEl = $('#roomErr', root);
+    errEl.hidden = true;
+    const body = {
+      domain_id: Number(val('domain_id').value),
+      type: state.type,
+      max_members: Number(val('max_members')?.value) || 20,
+      label: val('label').value.trim(),
+      password: val('password').value || null,
+      login_required: val('login_required').checked,
+      policy: {
+        retain: Number(val('retain').value),
+        disappear: Number(val('disappear').value),
+        hold: val('hold').checked,
+        hide_on_blur: val('hide_on_blur').checked,
+        display: readDisplay(),
+        theme: { name: state.theme },
+        visible: { device: val('v_device').checked, geo: val('v_geo').checked, local_time: val('v_local_time').checked, ip: val('v_ip').checked, typing: val('v_typing').checked },
+      },
+    };
+    const code = val('code').value.trim();
+    if (code) body.code = code;
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      // E2E room key, generated here and only ever in the invite link
+      const keyBytes = crypto.getRandomValues(new Uint8Array(32));
+      const key = buf2b64u(keyBytes);
+      const { item } = await api('/api/rooms', { method: 'POST', body });
+      const url = `${item.url}#k=${key}`;
+      rememberRoomUrl(item.id, url);
+      preview?.destroy();
+      m.close();
+      onSaved?.();
+      showRoomCreated(item, url);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      btn.disabled = false;
+    }
+  });
+}
+
+function showRoomCreated(item, url) {
+  const r = openModal({
+    title: '聊天室已创建',
+    body: `
+      <div class="success-box">
+        <div class="tick">${I.chat}</div>
+        <div class="code-pill note-url">${esc(url)}</div>
+        <p>${ROOM_TYPE_LABEL[item.type] || ''} · 把链接发给要聊天的人</p>
+      </div>
+      <div class="alert warn" style="margin-top:14px">${I.alert}<div># 后面是房间密钥，服务器上没有保存。所有参与者都用这个完整链接进入；之后只能在这个浏览器里重新复制。</div></div>`,
+    footer: `<button class="btn btn-secondary" data-close>关闭</button><a class="btn btn-secondary" href="${esc(url)}" target="_blank" rel="noopener">进入</a><button class="btn btn-primary" id="copyRoom">${I.copy} 复制链接</button>`,
+  });
+  $('#copyRoom', r.root).addEventListener('click', async () => (await copyText(url)) && toast('已复制'));
+}
+
 
 /* ---------------- domains ---------------- */
 

@@ -8,12 +8,16 @@ import { registerAuthRoutes } from './api-auth.js';
 import { registerMainRoutes } from './api-main.js';
 import { registerAdminRoutes } from './api-admin.js';
 import { registerV1Routes } from './api-v1.js';
-import { resolveSessionUser, resolveApiKey, isAdmin, adminPerm, effectiveScopes } from './auth.js';
+import { resolveSessionUser, resolveApiKey, isAdmin, adminPerm, effectiveScopes, userActive, hydrateUser } from './auth.js';
 import { registerNoteRoutes } from './api-notes.js';
+import { registerChatRoutes } from './api-chat.js';
+import { handleRoomSocket } from './room-socket.js';
 import { lookupDomain, hostOf } from './domains.js';
 import { handleRedirect } from './redirect.js';
 import { runMaintenance } from './cleanup.js';
 import { ok, fail, HttpError } from './util.js';
+
+export { ChatRoom } from './chat-room.js';
 
 const api = createRouter();
 registerAuthRoutes(api);
@@ -21,6 +25,7 @@ registerMainRoutes(api);
 registerAdminRoutes(api);
 registerV1Routes(api);
 registerNoteRoutes(api);
+registerChatRoutes(api);
 
 api.get('/api/health', () => ok({ status: 'ok', time: Date.now() }), { auth: 'none' });
 
@@ -45,6 +50,10 @@ export default {
 
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
         return await handleApi(req, env, ctx, url);
+      }
+
+      if (url.pathname.startsWith('/_ws/')) {
+        return await handleRoomSocket(req, env, ctx, url);
       }
 
       const domain = await lookupDomain(env, host);
