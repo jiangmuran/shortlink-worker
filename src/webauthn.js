@@ -158,6 +158,36 @@ export async function importCoseKey(coseBytes) {
   throw new Error(`unsupported credential algorithm (kty=${kty}, alg=${alg})`);
 }
 
+// WebAuthn ES256 signatures are ASN.1 DER (SEQUENCE { INTEGER r, INTEGER s }),
+// but WebCrypto's ECDSA verify expects the raw IEEE P1363 form r || s.
+export function ecdsaDerToRaw(sig, size) {
+  const bytes = sig instanceof Uint8Array ? sig : new Uint8Array(sig);
+  if (bytes.length === size * 2 && bytes[0] !== 0x30) return bytes; // already raw
+  let pos = 0;
+  const readLen = () => {
+    let len = bytes[pos++];
+    if (len & 0x80) {
+      const n = len & 0x7f;
+      len = 0;
+      for (let i = 0; i < n; i++) len = (len << 8) | bytes[pos++];
+    }
+    return len;
+  };
+  if (bytes[pos++] !== 0x30) throw new Error('invalid ECDSA signature');
+  readLen();
+  const out = new Uint8Array(size * 2);
+  for (let part = 0; part < 2; part++) {
+    if (bytes[pos++] !== 0x02) throw new Error('invalid ECDSA signature');
+    let len = readLen();
+    let int = bytes.subarray(pos, pos + len);
+    pos += len;
+    while (int.length > size && int[0] === 0) int = int.subarray(1); // drop sign-padding zero
+    if (int.length > size) throw new Error('invalid ECDSA signature');
+    out.set(int, part * size + (size - int.length));
+  }
+  return out;
+}
+
 // ---------- Ceremonies ----------
 
 function checkClientData(clientDataB64, expectedType, expectedChallenge, expectedOrigin) {
@@ -220,10 +250,11 @@ export async function verifyAssertion(assertion, stored, { challenge, origin, rp
   message.set(clientHash, authDataBytes.length);
 
   const imported = await importCoseKey(stored.public_key);
+  const signature = b64urlDecode(resp.signature);
   const valid = await crypto.subtle.verify(
     imported.alg === 'ES256' ? { name: 'ECDSA', hash: { name: 'SHA-256' } } : { name: 'RSASSA-PKCS1-v1_5' },
     imported.key,
-    b64urlDecode(resp.signature),
+    imported.alg === 'ES256' ? ecdsaDerToRaw(signature, 32) : signature,
     message
   );
   if (!valid) throw new Error('signature verification failed');
