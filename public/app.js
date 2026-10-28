@@ -1641,6 +1641,11 @@ function openNoteComposer(domains, onSaved) {
                 </div>
                 <label class="toggle-row"><div class="txt"><b>锁定首个打开的网络</b><span>之后换 IP 无法打开</span></div><span class="switch"><input type="checkbox" name="lock_ip"><i></i></span></label>
                 <label class="toggle-row"><div class="txt"><b>锁定首台打开的设备</b><span>换设备或清除浏览器数据后无法打开</span></div><span class="switch"><input type="checkbox" name="lock_device"><i></i></span></label>
+                ${nc.webhook ? `
+                <div class="field"><label>打开通知 Webhook <span class="opt">可选</span></label>
+                  <input class="input mono" name="webhook_url" type="url" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="https://… 被打开时推送通知">
+                  <div class="field-hint">每次成功打开后，向该 https 地址 POST 一条事件（含次数、地区）。不能是内网地址。</div>
+                </div>` : ''}
               </div>
             </details>
           </div>
@@ -1845,6 +1850,7 @@ function openNoteComposer(domains, onSaved) {
       password: val('password').value || null,
       pw_max_fail: Number(val('pw_max_fail').value),
       unlock_at: val('unlock_at').value ? new Date(val('unlock_at').value).getTime() : null,
+      webhook_url: val('webhook_url')?.value.trim() || null,
       access: {
         geo_mode: geoMode,
         geo_list: geoMode === 'off' ? [] : val('geo_list').value.split(/[,，\s]+/).filter(Boolean),
@@ -2460,6 +2466,7 @@ const CAP_FIELDS = [
     { key: 'max_opens', label: '打开次数上限', type: 'int', hint: '0 表示不限' },
     { key: 'max_ttl_hours', label: '最长有效期（小时）', type: 'int', hint: '0 表示不限' },
     { key: 'max_kb', label: '内容大小上限（KB）', type: 'int', min: 1, max: 64 },
+    { key: 'webhook', label: '允许设置打开通知', type: 'bool', hint: '被打开时向作者填写的 https 地址推送事件；不信任的账号建议关闭' },
   ] },
   { section: 'logs', title: '访问记录', fields: [
     { key: 'view', label: '可以查看自己内容的访问记录', type: 'bool' },

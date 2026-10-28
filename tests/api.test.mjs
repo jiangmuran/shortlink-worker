@@ -310,6 +310,19 @@ async function main() {
   });
   check('create e2e note', r.status === 201 && r.data.item.kind === 'note' && r.data.item.has_password, r.text);
   const note = r.data.item;
+
+  // open-notification webhook validation + storage
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'hook note' }, webhook_url: 'https://hooks.example.com/abc' });
+  check('note webhook stored', r.status === 201 && r.data.item.webhook === 'https://hooks.example.com/abc', r.text);
+  const hookNote = r.data.item;
+  r = await admin.get(`/api/notes/${hookNote.id}`);
+  check('note webhook in detail', r.data?.item?.webhook === 'https://hooks.example.com/abc', r.text);
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'x' }, webhook_url: 'http://hooks.example.com/abc' });
+  check('note webhook rejects http', r.status === 400 && r.error?.code === 'invalid_webhook', r.text);
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'x' }, webhook_url: 'https://192.168.1.10/x' });
+  check('note webhook rejects private ip', r.status === 400 && r.error?.code === 'invalid_webhook', r.text);
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'x' }, webhook_url: 'https://localhost/x' });
+  check('note webhook rejects localhost', r.status === 400 && r.error?.code === 'invalid_webhook', r.text);
   r = await admin.get('/api/links');
   check('note not in links list', !r.data.items.some((l) => l.id === note.id), r.text);
   r = await new Client('s.test').get(`/${note.code}`, { headers: { 'user-agent': 'Mozilla/5.0' } });

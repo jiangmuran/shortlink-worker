@@ -28,6 +28,7 @@ const SCHEMA = {
     max_opens: ['int', 0, 10_000],
     max_ttl_hours: ['int', 0, 87_600],
     max_kb: ['int', 1, 64],
+    webhook: ['bool'],
   },
   rooms: {
     create: ['bool'],
@@ -50,7 +51,7 @@ const SCHEMA = {
 
 export const FULL_CAPS = {
   links: { create: true, max: 0, daily: 0, custom_code: true, min_code_len: 1, modes: [...LINK_MODES], edit_target: true },
-  notes: { create: true, max_active: 0, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64 },
+  notes: { create: true, max_active: 0, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64, webhook: true },
   rooms: { create: true, max: 0, max_members: 500 },
   logs: { view: true, ip: 'full', export: true },
   api: { use: true, scopes: [...ALL_SCOPES] },
@@ -60,7 +61,7 @@ export const FULL_CAPS = {
 // Used when a regular user has no group (should not happen after migration 0002).
 export const FALLBACK_CAPS = {
   links: { create: true, max: 100, daily: 0, custom_code: true, min_code_len: 5, modes: [...LINK_MODES], edit_target: true },
-  notes: { create: true, max_active: 50, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64 },
+  notes: { create: true, max_active: 50, daily: 0, e2e: true, max_opens: 0, max_ttl_hours: 0, max_kb: 64, webhook: true },
   rooms: { create: true, max: 5, max_members: 50 },
   logs: { view: true, ip: 'full', export: true },
   api: { use: true, scopes: ['links:read', 'links:write', 'domains:read'] },

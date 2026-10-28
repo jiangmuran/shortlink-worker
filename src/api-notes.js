@@ -79,6 +79,58 @@ export function sanitizeMeta(raw) {
   return { title: str(m.title, 60), from: str(m.from, 40), hint: str(m.hint, 140) };
 }
 
+// Open-notification webhook. The server will POST to this URL, so it is an
+// SSRF surface — only accept public https endpoints, never internal hosts or
+// private IP ranges. Returns the cleaned URL, or throws for an invalid one.
+// An empty/absent value yields null (no webhook).
+function isPrivateHost(host) {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
+  // IPv4 literal → block loopback / private / link-local / CGNAT / unspecified
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (a === 10 || a === 127 || a === 0 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)) return true;
+  }
+  // IPv6 loopback / link-local / unique-local
+  if (h === '::1' || h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  return false;
+}
+
+export function sanitizeWebhook(raw) {
+  if (raw == null || raw === '') return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (s.length > 300) throw new HttpError(400, 'invalid_webhook', 'Webhook 地址过长');
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    throw new HttpError(400, 'invalid_webhook', 'Webhook 地址无效');
+  }
+  if (u.protocol !== 'https:') throw new HttpError(400, 'invalid_webhook', 'Webhook 必须是 https 地址');
+  if (!u.hostname || isPrivateHost(u.hostname)) throw new HttpError(400, 'invalid_webhook', 'Webhook 不能指向内网或本机地址');
+  return u.toString();
+}
+
+// Fire-and-forget open notification. Never throws; never follows redirects
+// (redirect-based SSRF bypass); bounded by a short timeout.
+async function fireWebhook(url, event) {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 4000);
+    await fetch(url, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: ctl.signal,
+      headers: { 'content-type': 'application/json', 'user-agent': 'shortlink-worker-webhook/1' },
+      body: JSON.stringify(event),
+    }).finally(() => clearTimeout(t));
+  } catch (e) {
+    console.error('webhook failed', e);
+  }
+}
+
 export function noteStatus(row, now = Date.now()) {
   if (row.burned_at) return 'burned';
   if (!row.enabled) return 'disabled';
@@ -108,6 +160,7 @@ function noteFromRow(row) {
     burn_reason: row.n_burn_reason || null,
     unlock_at: row.n_unlock_at || null,
     access: safeParseJson(row.n_access, {}),
+    webhook: row.n_webhook || null,
     status: noteStatus({
       burned_at: row.n_burned_at,
       enabled: row.enabled,
@@ -123,7 +176,7 @@ function noteFromRow(row) {
 const NOTE_COLS = `, n.enc AS n_enc, n.size AS n_size, n.max_opens AS n_max_opens, n.opens AS n_opens, n.open_ttl AS n_open_ttl,
   n.first_open_at AS n_first_open_at, n.pw_hash AS n_pw_hash, n.pw_fail AS n_pw_fail, n.pw_max_fail AS n_pw_max_fail,
   n.display AS n_display, n.theme AS n_theme, n.meta AS n_meta, n.burned_at AS n_burned_at, n.burn_reason AS n_burn_reason,
-  n.unlock_at AS n_unlock_at, n.access AS n_access`;
+  n.unlock_at AS n_unlock_at, n.access AS n_access, n.webhook AS n_webhook`;
 
 async function noteSelect(env) {
   const { sql, binds } = await linkSelect(env);
@@ -215,6 +268,8 @@ export async function createNote(env, user, domain, body) {
   if (expiresAt && expiresAt < Date.now()) throw new HttpError(400, 'invalid_input', '有效期不能早于现在');
   const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
   const access = sanitizeAccess(body.access);
+  const webhook = sanitizeWebhook(body.webhook_url ?? body.webhook);
+  if (webhook && !caps.webhook) throw new HttpError(403, 'webhook_forbidden', '当前账户不允许设置打开通知');
   let unlockAt = parseDateToMs(body.unlock_at);
   if (unlockAt && unlockAt < Date.now()) unlockAt = null;
   if (unlockAt && expiresAt && unlockAt >= expiresAt) throw new HttpError(400, 'invalid_input', '解锁时间不能晚于有效期');
@@ -231,8 +286,8 @@ export async function createNote(env, user, domain, body) {
     await consumeCreation(env, user, 'notes');
     await env.DB
       .prepare(
-        `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta, access, unlock_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta, access, unlock_at, webhook)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .bind(
         linkId,
@@ -248,7 +303,8 @@ export async function createNote(env, user, domain, body) {
         JSON.stringify(sanitizeTheme(body.theme)),
         JSON.stringify(sanitizeMeta(body.meta)),
         JSON.stringify(access),
-        unlockAt
+        unlockAt,
+        webhook
       )
       .run();
   } catch (e) {
@@ -341,7 +397,7 @@ export function registerNoteRoutes(r) {
       const domain = await lookupDomain(env, hostOf(req));
       if (!domain || domain.is_admin) throw new HttpError(404, 'not_found', '密信不存在');
       const link = await env.DB
-        .prepare("SELECT l.*, n.burned_at, n.max_opens, n.opens, n.open_ttl, n.first_open_at, n.pw_hash, n.pw_fail, n.pw_max_fail, n.enc, n.kcv, n.access, n.unlock_at, n.bound FROM links l JOIN notes n ON n.link_id = l.id WHERE l.domain_id = ? AND l.code = ? AND l.kind = 'note'")
+        .prepare("SELECT l.*, n.burned_at, n.max_opens, n.opens, n.open_ttl, n.first_open_at, n.pw_hash, n.pw_fail, n.pw_max_fail, n.enc, n.kcv, n.access, n.unlock_at, n.bound, n.webhook FROM links l JOIN notes n ON n.link_id = l.id WHERE l.domain_id = ? AND l.code = ? AND l.kind = 'note'")
         .bind(domain.id, ctx.params.code)
         .first();
       if (!link) throw new HttpError(404, 'not_found', '密信不存在');
@@ -421,6 +477,24 @@ export function registerNoteRoutes(r) {
       }
       await env.DB.batch(stmts);
       await logOpen(env, ctx.ctx, link.id, req, 'opened');
+
+      if (link.webhook) {
+        const cfx = req.cf || {};
+        ctx.ctx.waitUntil(
+          fireWebhook(link.webhook, {
+            event: 'note.opened',
+            code: link.code,
+            host: domain.hostname,
+            opened_at: now,
+            opens: opened.opens,
+            max_opens: opened.max_opens,
+            remaining: opened.max_opens > 0 ? opened.max_opens - opened.opens : null,
+            burned: lastOpen,
+            country: typeof cfx.country === 'string' ? cfx.country : null,
+            city: typeof cfx.city === 'string' ? cfx.city : null,
+          })
+        );
+      }
 
       const res = {
         enc: opened.enc,

@@ -152,7 +152,8 @@
   "display": { "mode": "motion" },          <span class="cm">// 展示方式，详见控制台</span>
   "theme": { "name": "min" },
   "expires_at": "2027-01-01T00:00:00Z",     <span class="cm">// 可选</span>
-  "unlock_at": null                         <span class="cm">// 可选，定时解锁</span>
+  "unlock_at": null,                        <span class="cm">// 可选，定时解锁</span>
+  "webhook_url": "https://hooks.example.com/x" <span class="cm">// 可选，每次打开后 POST 事件（仅 https、公网地址；需账户授权）</span>
 }</pre>
   </div>
 
