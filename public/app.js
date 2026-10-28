@@ -1625,6 +1625,27 @@ function openNoteComposer(domains, onSaved) {
           </div>
 
           <div class="form-section">
+            <details class="cap-details" id="accessDetails">
+              <summary><span>更多限制</span><span class="sub">定时解锁、地区、IP、设备</span>${I.chevRight.replace('<svg', '<svg class="chev"')}</summary>
+              <div style="margin-top:14px">
+                <div class="field"><label>定时解锁 <span class="opt">可选</span></label>
+                  <input class="input" name="unlock_at" type="datetime-local">
+                  <div class="field-hint">在此时间之前，打开只会看到倒计时</div>
+                </div>
+                <div class="field"><label>地区限制</label>
+                  <div class="seg block" style="max-width:360px"><button type="button" class="on" data-geo="off">不限</button><button type="button" data-geo="allow">仅允许</button><button type="button" data-geo="deny">禁止</button></div>
+                  <input class="input" name="geo_list" placeholder="国家/地区代码，逗号分隔，如 CN, HK, US" hidden style="margin-top:8px">
+                </div>
+                <div class="field"><label>IP 白名单 <span class="opt">可选</span></label>
+                  <textarea class="textarea" name="ip_list" rows="2" placeholder="每行一个 IP 或网段，如 203.0.113.5 或 203.0.113.0/24"></textarea>
+                </div>
+                <label class="toggle-row"><div class="txt"><b>锁定首个打开的网络</b><span>之后换 IP 无法打开</span></div><span class="switch"><input type="checkbox" name="lock_ip"><i></i></span></label>
+                <label class="toggle-row"><div class="txt"><b>锁定首台打开的设备</b><span>换设备或清除浏览器数据后无法打开</span></div><span class="switch"><input type="checkbox" name="lock_device"><i></i></span></label>
+              </div>
+            </details>
+          </div>
+
+          <div class="form-section">
             <div class="form-section-title">链接</div>
             <div class="field">
               <div class="joined">
@@ -1792,6 +1813,12 @@ function openNoteComposer(domains, onSaved) {
     repaint();
   });
   root.querySelector('.composer-form').addEventListener('change', repaint);
+  let geoMode = 'off';
+  $$('[data-geo]', root).forEach((b) => b.addEventListener('click', () => {
+    geoMode = b.dataset.geo;
+    $$('[data-geo]', root).forEach((x) => x.classList.toggle('on', x === b));
+    val('geo_list').hidden = geoMode === 'off';
+  }));
   paintMode();
   paintEnc();
   paintPreview();
@@ -1817,6 +1844,14 @@ function openNoteComposer(domains, onSaved) {
       open_ttl: Number(val('open_ttl').value) || null,
       password: val('password').value || null,
       pw_max_fail: Number(val('pw_max_fail').value),
+      unlock_at: val('unlock_at').value ? new Date(val('unlock_at').value).getTime() : null,
+      access: {
+        geo_mode: geoMode,
+        geo_list: geoMode === 'off' ? [] : val('geo_list').value.split(/[,，\s]+/).filter(Boolean),
+        ip_list: val('ip_list').value.split(/\n+/).map((x) => x.trim()).filter(Boolean),
+        lock_ip: val('lock_ip').checked,
+        lock_device: val('lock_device').checked,
+      },
       display,
       theme: { name: state.theme },
       meta: { title: val('title').value.trim(), from: val('from').value.trim(), hint: val('hint').value.trim() },

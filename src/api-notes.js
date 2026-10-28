@@ -10,7 +10,29 @@ import { createCodeFor, resolveUsableDomain, linkSelect, linkFromRow, deleteLink
 import { lookupDomain, hostOf } from './domains.js';
 import { consumeCreation } from './usage.js';
 import { audit } from './audit.js';
-import { ok, HttpError, readJsonBody, parseIntOr, parseDateToMs, safeParseJson, b64urlEncode, b64urlDecode, normalizeTargetUrl } from './util.js';
+import { ipInList, validCidr } from './netmatch.js';
+import { ok, HttpError, readJsonBody, parseIntOr, parseDateToMs, safeParseJson, b64urlEncode, b64urlDecode, normalizeTargetUrl, randomToken } from './util.js';
+
+function cookieVal(req, name) {
+  const h = req.headers.get('cookie') || '';
+  for (const part of h.split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+export function sanitizeAccess(raw) {
+  const a = raw && typeof raw === 'object' ? raw : {};
+  const geo_mode = ['allow', 'deny'].includes(a.geo_mode) ? a.geo_mode : 'off';
+  const geo_list = geo_mode === 'off' ? [] : [...new Set((Array.isArray(a.geo_list) ? a.geo_list : []).map((c) => String(c).toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c)))].slice(0, 60);
+  const ip_list = [...new Set((Array.isArray(a.ip_list) ? a.ip_list : []).map((s) => String(s).trim()).filter((s) => s && validCidr(s)))].slice(0, 50);
+  return { geo_mode, geo_list, ip_list, lock_ip: !!a.lock_ip, lock_device: !!a.lock_device };
+}
+
+export function accessIsSet(a) {
+  return a.geo_mode !== 'off' || a.ip_list.length > 0 || a.lock_ip || a.lock_device;
+}
 
 export const NOTE_THEMES = ['min', 'letter', 'term', 'noir'];
 export const NOTE_MODES = ['motion', 'comp', 'plain', 'type', 'window', 'countdown'];
@@ -84,6 +106,8 @@ function noteFromRow(row) {
     meta: safeParseJson(row.n_meta, {}),
     burned_at: row.n_burned_at || null,
     burn_reason: row.n_burn_reason || null,
+    unlock_at: row.n_unlock_at || null,
+    access: safeParseJson(row.n_access, {}),
     status: noteStatus({
       burned_at: row.n_burned_at,
       enabled: row.enabled,
@@ -98,7 +122,8 @@ function noteFromRow(row) {
 
 const NOTE_COLS = `, n.enc AS n_enc, n.size AS n_size, n.max_opens AS n_max_opens, n.opens AS n_opens, n.open_ttl AS n_open_ttl,
   n.first_open_at AS n_first_open_at, n.pw_hash AS n_pw_hash, n.pw_fail AS n_pw_fail, n.pw_max_fail AS n_pw_max_fail,
-  n.display AS n_display, n.theme AS n_theme, n.meta AS n_meta, n.burned_at AS n_burned_at, n.burn_reason AS n_burn_reason`;
+  n.display AS n_display, n.theme AS n_theme, n.meta AS n_meta, n.burned_at AS n_burned_at, n.burn_reason AS n_burn_reason,
+  n.unlock_at AS n_unlock_at, n.access AS n_access`;
 
 async function noteSelect(env) {
   const { sql, binds } = await linkSelect(env);
@@ -227,6 +252,10 @@ export function registerNoteRoutes(r) {
     }
     if (expiresAt && expiresAt < Date.now()) throw new HttpError(400, 'invalid_input', '有效期不能早于现在');
     const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
+    const access = sanitizeAccess(body.access);
+    let unlockAt = parseDateToMs(body.unlock_at);
+    if (unlockAt && unlockAt < Date.now()) unlockAt = null;
+    if (unlockAt && expiresAt && unlockAt >= expiresAt) throw new HttpError(400, 'invalid_input', '解锁时间不能晚于有效期');
 
     await assertNoteQuota(ctx.env, user);
     const linkId = await createCodeFor(ctx.env, user, 'note', {
@@ -240,8 +269,8 @@ export function registerNoteRoutes(r) {
       await consumeCreation(ctx.env, user, 'notes');
       await ctx.env.DB
         .prepare(
-          `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta, access, unlock_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
         )
         .bind(
           linkId,
@@ -255,7 +284,9 @@ export function registerNoteRoutes(r) {
           parseIntOr(body.pw_max_fail, 5, { min: 0, max: 100 }),
           JSON.stringify(sanitizeDisplay(body.display)),
           JSON.stringify(sanitizeTheme(body.theme)),
-          JSON.stringify(sanitizeMeta(body.meta))
+          JSON.stringify(sanitizeMeta(body.meta)),
+          JSON.stringify(access),
+          unlockAt
         )
         .run();
     } catch (e) {
@@ -302,7 +333,7 @@ export function registerNoteRoutes(r) {
       const domain = await lookupDomain(env, hostOf(req));
       if (!domain || domain.is_admin) throw new HttpError(404, 'not_found', '密信不存在');
       const link = await env.DB
-        .prepare("SELECT l.*, n.burned_at, n.max_opens, n.opens, n.open_ttl, n.first_open_at, n.pw_hash, n.pw_fail, n.pw_max_fail, n.enc, n.kcv FROM links l JOIN notes n ON n.link_id = l.id WHERE l.domain_id = ? AND l.code = ? AND l.kind = 'note'")
+        .prepare("SELECT l.*, n.burned_at, n.max_opens, n.opens, n.open_ttl, n.first_open_at, n.pw_hash, n.pw_fail, n.pw_max_fail, n.enc, n.kcv, n.access, n.unlock_at, n.bound FROM links l JOIN notes n ON n.link_id = l.id WHERE l.domain_id = ? AND l.code = ? AND l.kind = 'note'")
         .bind(domain.id, ctx.params.code)
         .first();
       if (!link) throw new HttpError(404, 'not_found', '密信不存在');
@@ -321,6 +352,28 @@ export function registerNoteRoutes(r) {
       if ((link.expires_at && link.expires_at < now) || (link.first_open_at && link.open_ttl && link.first_open_at + link.open_ttl * 1000 < now)) {
         await burnNote(env, link.id, 'expired');
         await deny('expired', 410, 'expired', '这封密信已过期，内容已销毁');
+      }
+      if (link.unlock_at && now < link.unlock_at) {
+        await deny('locked', 423, 'locked', '还没到可查看的时间', { unlock_at: link.unlock_at });
+      }
+      // region / IP / first-device binding (checked before an open is consumed)
+      const access = safeParseJson(link.access, {});
+      const bound = safeParseJson(link.bound, {});
+      const cf = req.cf || {};
+      const country = typeof cf.country === 'string' ? cf.country : '';
+      const ip = req.headers.get('cf-connecting-ip') || '';
+      if (access.geo_mode === 'allow' && !(access.geo_list || []).includes(country)) await deny('denied_geo', 403, 'denied_geo', '你所在的地区无法查看这封密信');
+      if (access.geo_mode === 'deny' && (access.geo_list || []).includes(country)) await deny('denied_geo', 403, 'denied_geo', '你所在的地区无法查看这封密信');
+      if ((access.ip_list || []).length && !ipInList(ip, access.ip_list)) await deny('denied_ip', 403, 'denied_ip', '你的网络无法查看这封密信');
+      if (access.lock_ip && bound.ip && bound.ip !== ip) await deny('denied_ip', 403, 'denied_ip', '这封密信已锁定到首次打开它的网络');
+      let device = cookieVal(req, 'sl_d');
+      let setDeviceCookie = false;
+      if (access.lock_device) {
+        if (!device) {
+          device = randomToken(12);
+          setDeviceCookie = true;
+        }
+        if (bound.device && bound.device !== device) await deny('denied_device', 403, 'denied_device', '这封密信已锁定到首次打开它的设备');
       }
       if (link.enc === 'e2e' && link.kcv && body.kcv !== link.kcv) {
         throw new HttpError(400, 'bad_key', '链接里的解密密钥不完整或不正确，请确认复制了完整链接（包括 # 后面的部分）');
@@ -354,6 +407,10 @@ export function registerNoteRoutes(r) {
       if (lastOpen) {
         stmts.push(env.DB.prepare("UPDATE notes SET cipher = NULL, burned_at = ?, burn_reason = 'exhausted' WHERE link_id = ?").bind(now, link.id));
       }
+      // bind first opener's IP / device for the lock options
+      if ((access.lock_ip || access.lock_device) && !bound.ip && !bound.device) {
+        stmts.push(env.DB.prepare('UPDATE notes SET bound = ? WHERE link_id = ?').bind(JSON.stringify({ ip: access.lock_ip ? ip : undefined, device: access.lock_device ? device : undefined }), link.id));
+      }
       await env.DB.batch(stmts);
       await logOpen(env, ctx.ctx, link.id, req, 'opened');
 
@@ -367,7 +424,9 @@ export function registerNoteRoutes(r) {
       };
       if (opened.enc === 'server') res.payload = JSON.parse(await serverDecrypt(env, opened.cipher));
       else res.cipher = b64urlEncode(new Uint8Array(opened.cipher));
-      return ok(res, { headers: { 'cache-control': 'no-store' } });
+      const headers = { 'cache-control': 'no-store' };
+      if (setDeviceCookie) headers['set-cookie'] = `sl_d=${device}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure`;
+      return ok(res, { headers });
     },
     { auth: 'none' }
   );

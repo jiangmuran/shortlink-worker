@@ -168,6 +168,7 @@ async function notePage(req, env, ctx, link, settings, domain) {
     first_open_at: note.first_open_at || null,
     expires_at: link.expires_at || null,
     needs_password: !!note.pw_hash,
+    unlock_at: note.unlock_at || null,
     attempts_left: note.pw_hash && note.pw_max_fail > 0 ? Math.max(0, note.pw_max_fail - note.pw_fail) : null,
     is_bot: BOT_UA.test(ua),
   };

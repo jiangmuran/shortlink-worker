@@ -370,6 +370,38 @@ async function main() {
   check('audit has content view', r.data?.items?.some((a) => a.action === 'note.view_content'), r.text);
   check('audit has freeze', r.data?.items?.some((a) => a.action === 'user.freeze'));
 
+  // ---------- note access limits (scheduled unlock, region, IP, device lock) ----------
+  // scheduled unlock: open before unlock_at is refused without consuming
+  const eU = await encryptNote({ text: 'later' });
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'e2e', cipher: eU.cipher, kcv: eU.kcv, max_opens: 1, unlock_at: Date.now() + 3600_000 });
+  const scheduled = r.data.item;
+  check('note stores unlock_at', scheduled.unlock_at > Date.now(), r.text);
+  r = await new Client('s.test').post(`/api/n/${scheduled.code}/open`, { kcv: eU.kcv });
+  check('locked before unlock time', r.status === 423 && r.error?.code === 'locked' && r.error?.unlock_at > Date.now(), r.text);
+  r = await admin.get(`/api/notes/${scheduled.id}`);
+  check('scheduled note not consumed', r.data.item.opens === 0 && r.data.item.status !== 'burned', r.text);
+
+  // region deny
+  const eG = await encryptNote({ text: 'geo' });
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'e2e', cipher: eG.cipher, kcv: eG.kcv, max_opens: 1, access: { geo_mode: 'allow', geo_list: ['JP'] } });
+  const geoNote = r.data.item;
+  check('access saved', geoNote.access?.geo_mode === 'allow' && geoNote.access.geo_list.includes('JP'), JSON.stringify(geoNote.access));
+  // local dev cf.country is usually absent/US -> not JP -> denied
+  r = await new Client('s.test').post(`/api/n/${geoNote.code}/open`, { kcv: eG.kcv });
+  check('region blocks open', r.status === 403 && r.error?.code === 'denied_geo', r.text);
+
+  // IP allowlist: a non-matching IP is blocked (dev has no real client IP)
+  const eI = await encryptNote({ text: 'ip' });
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'e2e', cipher: eI.cipher, kcv: eI.kcv, max_opens: 1, access: { ip_list: ['203.0.113.0/24'] } });
+  const ipNote = r.data.item;
+  r = await new Client('s.test').post(`/api/n/${ipNote.code}/open`, { kcv: eI.kcv });
+  check('ip allowlist blocks', r.status === 403 && r.error?.code === 'denied_ip', r.text);
+
+  // bad access input rejected cleanly
+  const eB = await encryptNote({ text: 'bad' });
+  r = await admin.post('/api/notes', { domain_id: S, enc: 'e2e', cipher: eB.cipher, kcv: eB.kcv, access: { ip_list: ['not-an-ip', '10.0.0.0/8'] } });
+  check('invalid CIDR dropped', r.status === 201 && r.data.item.access.ip_list.length === 1 && r.data.item.access.ip_list[0] === '10.0.0.0/8', JSON.stringify(r.data?.item?.access));
+
   // ---------- maintenance & rollups ----------
   r = await admin.post('/api/admin/cleanup', {});
   check('maintenance runs', r.status === 200 && r.data.rolled_days >= 1, r.text);

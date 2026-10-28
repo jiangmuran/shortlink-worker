@@ -84,6 +84,9 @@ const END = {
 function endMark() {
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5 11 15l4.5-5"/></svg>';
 }
+function clockMark() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>';
+}
 
 // ---------- viewer ----------
 
@@ -130,8 +133,25 @@ export function mountNote(root, data, opts = {}) {
     stage.innerHTML = `<div class="nt-end"><div class="nt-end-mark">${endMark()}</div><b>${esc(overrideTitle || title)}</b>${overrideSub || sub ? `<span>${esc(overrideSub || sub)}</span>` : ''}</div>`;
   }
 
+  function countdownCover() {
+    clear();
+    const render = () => {
+      const left = Math.max(0, Math.ceil((data.unlock_at - Date.now()) / 1000));
+      if (left <= 0) {
+        cover();
+        return;
+      }
+      const h = Math.floor(left / 3600), mm = Math.floor((left % 3600) / 60), ss = left % 60;
+      const txt = h ? `${h} 小时 ${mm} 分` : mm ? `${mm} 分 ${ss} 秒` : `${ss} 秒`;
+      stage.innerHTML = `<div class="nt-end"><div class="nt-end-mark">${clockMark()}</div><b>还没到可查看的时间</b><span>${esc(fmtTime(data.unlock_at))} 后开放 · 还有 ${esc(txt)}</span></div>`;
+      timers.push(setTimeout(render, 1000));
+    };
+    render();
+  }
+
   function cover(error) {
     clear();
+    if (data.unlock_at && Date.now() < data.unlock_at) return countdownCover();
     const rem = data.max_opens > 0 ? Math.max(0, data.max_opens - data.opens) : null;
     const facts = [];
     if (data.max_opens === 0) facts.push('可反复查看');
@@ -182,6 +202,10 @@ export function mountNote(root, data, opts = {}) {
           if (err.code === 'burned' || err.code === 'exhausted') return endState('used');
           if (err.code === 'expired') return endState('expired');
           if (err.code === 'disabled') return endState('disabled');
+          if (err.code === 'locked') {
+            if (err.unlock_at) data.unlock_at = err.unlock_at;
+            return countdownCover();
+          }
           if (typeof err.attempts_left === 'number') attemptsLeft = err.attempts_left;
           return cover(err.message || '打开失败，请稍后再试');
         }
