@@ -52,6 +52,45 @@ async function fetchRoom(env, id) {
   return env.DB.prepare(`${ROOM_SELECT} AND l.id = ?`).bind(Number(id)).first();
 }
 
+// Shared room-creation service: used by the console (POST /api/rooms) and the
+// public REST API (POST /api/v1/rooms). `domain` is resolved by the caller.
+// Returns the room row; the caller is responsible for any audit logging.
+export async function createRoom(env, user, domain, body) {
+  const caps = capsOf(user).rooms;
+  if (!caps.create) throw new HttpError(403, 'forbidden', '该账户没有创建聊天室的权限');
+  const type = ROOM_TYPES.includes(body.type) ? body.type : 'group';
+
+  if (!isAdmin(user) && caps.max > 0) {
+    const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM links l JOIN rooms r ON r.link_id = l.id WHERE l.created_by = ? AND l.kind = 'room' AND r.destroyed_at IS NULL").bind(user.id).first();
+    if (n.n >= caps.max) throw new HttpError(403, 'quota_exceeded', `进行中的聊天室已达上限（${caps.max} 个）`);
+  }
+
+  let maxMembers = parseIntOr(body.max_members, type === 'dm' ? 2 : 20, { min: 2, max: 1000 });
+  if (type === 'dm') maxMembers = 2;
+  if (caps.max_members > 0) maxMembers = Math.min(maxMembers, caps.max_members);
+  const policy = sanitizePolicy(body.policy, capsOf(user));
+  if (type === 'burn') policy.retain = 0; // burn rooms never store messages
+  const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
+  const access = { login_required: !!body.login_required };
+  if (password) access.pw_hash = await hashPassword(password);
+
+  const linkId = await createCodeFor(env, user, 'room', {
+    domain,
+    code: body.code,
+    randomLength: body.random_length || 8,
+    note: typeof body.label === 'string' ? body.label.trim() : '',
+  });
+  try {
+    await env.DB.prepare('INSERT INTO rooms(link_id, type, max_members, policy, access) VALUES(?,?,?,?,?)')
+      .bind(linkId, type, maxMembers, JSON.stringify(policy), JSON.stringify(access))
+      .run();
+  } catch (e) {
+    await deleteLinkCascade(env, linkId);
+    throw e;
+  }
+  return fetchRoom(env, linkId);
+}
+
 export function registerChatRoutes(r) {
   r.get('/api/rooms', async (ctx) => {
     const where = canSeeAll(ctx.user) ? '' : ' AND l.created_by = ?';
@@ -67,42 +106,10 @@ export function registerChatRoutes(r) {
   });
 
   r.post('/api/rooms', async (ctx) => {
-    const caps = capsOf(ctx.user).rooms;
-    if (!caps.create) throw new HttpError(403, 'forbidden', '该账户没有创建聊天室的权限');
     const body = await readJsonBody(ctx.req);
     const domain = await resolveUsableDomain(ctx.env, ctx.user, body.domain_id);
-    const type = ROOM_TYPES.includes(body.type) ? body.type : 'group';
-
-    if (!isAdmin(ctx.user) && caps.max > 0) {
-      const n = await ctx.env.DB.prepare("SELECT COUNT(*) AS n FROM links l JOIN rooms r ON r.link_id = l.id WHERE l.created_by = ? AND l.kind = 'room' AND r.destroyed_at IS NULL").bind(ctx.user.id).first();
-      if (n.n >= caps.max) throw new HttpError(403, 'quota_exceeded', `进行中的聊天室已达上限（${caps.max} 个）`);
-    }
-
-    let maxMembers = parseIntOr(body.max_members, type === 'dm' ? 2 : 20, { min: 2, max: 1000 });
-    if (type === 'dm') maxMembers = 2;
-    if (caps.max_members > 0) maxMembers = Math.min(maxMembers, caps.max_members);
-    const policy = sanitizePolicy(body.policy, capsOf(ctx.user));
-    if (type === 'burn') policy.retain = 0; // burn rooms never store messages
-    const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
-    const access = { login_required: !!body.login_required };
-    if (password) access.pw_hash = await hashPassword(password);
-
-    const linkId = await createCodeFor(ctx.env, ctx.user, 'room', {
-      domain,
-      code: body.code,
-      randomLength: body.random_length || 8,
-      note: typeof body.label === 'string' ? body.label.trim() : '',
-    });
-    try {
-      await ctx.env.DB.prepare('INSERT INTO rooms(link_id, type, max_members, policy, access) VALUES(?,?,?,?,?)')
-        .bind(linkId, type, maxMembers, JSON.stringify(policy), JSON.stringify(access))
-        .run();
-    } catch (e) {
-      await deleteLinkCascade(ctx.env, linkId);
-      throw e;
-    }
-    audit(ctx, 'room.create', { type: 'room', id: linkId, detail: `${domain.hostname} · ${type}` });
-    const row = await fetchRoom(ctx.env, linkId);
+    const row = await createRoom(ctx.env, ctx.user, domain, body);
+    audit(ctx, 'room.create', { type: 'room', id: row.id, detail: `${domain.hostname} · ${row.type}` });
     return ok({ item: roomFromRow(row, row) }, { status: 201 });
   });
 
@@ -189,4 +196,4 @@ export async function roomInfo(env, linkId) {
   }
 }
 
-export { fetchRoom, sanitizePolicy };
+export { fetchRoom, sanitizePolicy, roomFromRow, ROOM_SELECT };

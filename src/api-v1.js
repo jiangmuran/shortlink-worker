@@ -6,6 +6,8 @@
 
 import { canViewLogs, canAccessDomain, canSeeAll, capsOf, getSettings } from './auth.js';
 import { linkSelect, fetchLinkRow, createLink, updateLink, deleteLinkCascade } from './links-service.js';
+import { createNote, noteFromRow, fetchNoteRow, noteSelect } from './api-notes.js';
+import { createRoom, roomFromRow, fetchRoom, ROOM_SELECT } from './api-chat.js';
 import { applyIpPolicy } from './caps.js';
 import { ok, HttpError, readJsonBody, safeParseJson, linkUrl } from './util.js';
 
@@ -183,6 +185,123 @@ export function registerV1Routes(r) {
       return ok({ deleted: true });
     },
     { auth: 'key', scope: 'links:write' }
+  );
+
+  // ---------- notes ----------
+  r.get(
+    '/api/v1/notes',
+    async (ctx) => {
+      requireScope(ctx, 'notes:read');
+      const q = ctx.query;
+      const page = Math.min(10000, Math.max(1, Number(q.get('page')) || 1));
+      const per = Math.min(100, Math.max(1, Number(q.get('per')) || 20));
+      const where = ["l.kind = 'note'"];
+      const params = [];
+      if (!canSeeAll(ctx.user)) {
+        where.push('l.created_by = ?');
+        params.push(ctx.user.id);
+      }
+      const status = q.get('status');
+      if (status === 'live') where.push('n.burned_at IS NULL');
+      if (status === 'burned') where.push('n.burned_at IS NOT NULL');
+      const whereSql = ' WHERE ' + where.join(' AND ');
+      const { sql, binds } = await noteSelect(ctx.env);
+      const count = await ctx.env.DB.prepare(`SELECT COUNT(*) AS n FROM links l JOIN notes n ON n.link_id = l.id${whereSql}`).bind(...params).first();
+      const { results } = await ctx.env.DB
+        .prepare(`${sql}${whereSql} ORDER BY l.created_at DESC LIMIT ? OFFSET ?`)
+        .bind(...binds, ...params, per, (page - 1) * per)
+        .all();
+      return ok({ items: (results || []).map(noteFromRow), total: count.n, page, per_page: per });
+    },
+    { auth: 'key', scope: 'notes:read' }
+  );
+
+  r.post(
+    '/api/v1/notes',
+    async (ctx) => {
+      requireScope(ctx, 'notes:write');
+      const body = await readJsonBody(ctx.req);
+      const domain = await findDomain(ctx.env, ctx.user, body.domain ?? body.domain_id);
+      const row = await createNote(ctx.env, ctx.user, domain, body);
+      return ok(noteFromRow(row), { status: 201 });
+    },
+    { auth: 'key', scope: 'notes:write' }
+  );
+
+  r.get(
+    '/api/v1/notes/:id',
+    async (ctx) => {
+      requireScope(ctx, 'notes:read');
+      const row = await fetchNoteRow(ctx.env, ctx.params.id);
+      if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '密信不存在');
+      return ok(noteFromRow(row));
+    },
+    { auth: 'key', scope: 'notes:read' }
+  );
+
+  r.delete(
+    '/api/v1/notes/:id',
+    async (ctx) => {
+      requireScope(ctx, 'notes:write');
+      const row = await fetchNoteRow(ctx.env, ctx.params.id);
+      if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '密信不存在');
+      await deleteLinkCascade(ctx.env, row.id);
+      return ok({ deleted: true });
+    },
+    { auth: 'key', scope: 'notes:write' }
+  );
+
+  // ---------- rooms ----------
+  r.get(
+    '/api/v1/rooms',
+    async (ctx) => {
+      requireScope(ctx, 'rooms:read');
+      const where = canSeeAll(ctx.user) ? '' : ' AND l.created_by = ?';
+      const binds = canSeeAll(ctx.user) ? [] : [ctx.user.id];
+      const { results } = await ctx.env.DB.prepare(`${ROOM_SELECT}${where} ORDER BY l.created_at DESC LIMIT 200`).bind(...binds).all();
+      return ok({ items: (results || []).map((row) => roomFromRow(row, row)) });
+    },
+    { auth: 'key', scope: 'rooms:read' }
+  );
+
+  r.post(
+    '/api/v1/rooms',
+    async (ctx) => {
+      requireScope(ctx, 'rooms:write');
+      const body = await readJsonBody(ctx.req);
+      const domain = await findDomain(ctx.env, ctx.user, body.domain ?? body.domain_id);
+      const row = await createRoom(ctx.env, ctx.user, domain, body);
+      return ok(roomFromRow(row, row), { status: 201 });
+    },
+    { auth: 'key', scope: 'rooms:write' }
+  );
+
+  r.get(
+    '/api/v1/rooms/:id',
+    async (ctx) => {
+      requireScope(ctx, 'rooms:read');
+      const row = await fetchRoom(ctx.env, ctx.params.id);
+      if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '聊天室不存在');
+      return ok(roomFromRow(row, row));
+    },
+    { auth: 'key', scope: 'rooms:read' }
+  );
+
+  r.delete(
+    '/api/v1/rooms/:id',
+    async (ctx) => {
+      requireScope(ctx, 'rooms:write');
+      const row = await fetchRoom(ctx.env, ctx.params.id);
+      if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '聊天室不存在');
+      try {
+        const stub = ctx.env.ROOM.get(ctx.env.ROOM.idFromName(`room:${row.id}`));
+        await stub.fetch('https://room/destroy', { method: 'POST' });
+      } catch {}
+      await ctx.env.DB.prepare('DELETE FROM rooms WHERE link_id = ?').bind(row.id).run();
+      await deleteLinkCascade(ctx.env, row.id);
+      return ok({ deleted: true });
+    },
+    { auth: 'key', scope: 'rooms:write' }
   );
 
   r.get(

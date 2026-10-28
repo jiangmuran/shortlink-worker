@@ -172,6 +172,94 @@ async function assertNoteQuota(env, user) {
   if (row.n >= max) throw new HttpError(403, 'quota_exceeded', `进行中的密信已达上限（${max} 封），等已有密信焚毁或过期后再创建`);
 }
 
+// Shared note-creation service: used by the console (POST /api/notes) and the
+// public REST API (POST /api/v1/notes). `domain` is already resolved by the
+// caller (the two entry points resolve domains differently). Returns the row.
+export async function createNote(env, user, domain, body) {
+  const caps = capsOf(user).notes;
+  if (!caps.create) throw new HttpError(403, 'forbidden', '该账户没有创建密信的权限');
+
+  const enc = body.enc === 'server' ? 'server' : 'e2e';
+  if (enc === 'e2e' && !caps.e2e) throw new HttpError(403, 'e2e_forbidden', '当前账户的密信需要使用服务端加密');
+  let cipher;
+  let kcv = null;
+  if (enc === 'e2e') {
+    try {
+      cipher = b64urlDecode(String(body.cipher || ''));
+    } catch {
+      throw new HttpError(400, 'invalid_cipher', '加密内容格式无效');
+    }
+    if (cipher.length < 29) throw new HttpError(400, 'invalid_cipher', '加密内容格式无效');
+    kcv = typeof body.kcv === 'string' && /^[A-Za-z0-9_-]{8,32}$/.test(body.kcv) ? body.kcv : null;
+    if (!kcv) throw new HttpError(400, 'invalid_cipher', '缺少密钥校验值');
+  } else {
+    const payload = body.payload && typeof body.payload === 'object' ? body.payload : null;
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (!text.trim()) throw new HttpError(400, 'invalid_input', '请填写密信内容');
+    cipher = await serverEncrypt(env, JSON.stringify({ v: 1, format: payload.format === 'markdown' ? 'markdown' : 'text', text }));
+  }
+  const limit = caps.max_kb * 1024 + 64;
+  if (cipher.length > limit) throw new HttpError(413, 'too_large', `内容太长，上限约 ${caps.max_kb} KB`);
+
+  let maxOpens = parseIntOr(body.max_opens, 1, { min: 0, max: 10000 });
+  if (caps.max_opens > 0 && (maxOpens === 0 || maxOpens > caps.max_opens)) {
+    throw new HttpError(400, 'too_many_opens', `打开次数最多 ${caps.max_opens} 次`);
+  }
+  let expiresAt = parseDateToMs(body.expires_at);
+  let openTtl = body.open_ttl ? parseIntOr(body.open_ttl, 0, { min: 10, max: 365 * 86400 }) : null;
+  if (caps.max_ttl_hours > 0) {
+    const latest = Date.now() + caps.max_ttl_hours * HOUR;
+    if (!expiresAt || expiresAt > latest) expiresAt = latest;
+    if (openTtl && openTtl > caps.max_ttl_hours * 3600) openTtl = caps.max_ttl_hours * 3600;
+  }
+  if (expiresAt && expiresAt < Date.now()) throw new HttpError(400, 'invalid_input', '有效期不能早于现在');
+  const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
+  const access = sanitizeAccess(body.access);
+  let unlockAt = parseDateToMs(body.unlock_at);
+  if (unlockAt && unlockAt < Date.now()) unlockAt = null;
+  if (unlockAt && expiresAt && unlockAt >= expiresAt) throw new HttpError(400, 'invalid_input', '解锁时间不能晚于有效期');
+
+  await assertNoteQuota(env, user);
+  const linkId = await createCodeFor(env, user, 'note', {
+    domain,
+    code: body.code,
+    randomLength: body.random_length || 8,
+    note: typeof body.label === 'string' ? body.label.trim() : '',
+    expiresAt,
+  });
+  try {
+    await consumeCreation(env, user, 'notes');
+    await env.DB
+      .prepare(
+        `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta, access, unlock_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .bind(
+        linkId,
+        cipher,
+        enc,
+        kcv,
+        cipher.length,
+        maxOpens,
+        openTtl,
+        password ? await hashPassword(password) : null,
+        parseIntOr(body.pw_max_fail, 5, { min: 0, max: 100 }),
+        JSON.stringify(sanitizeDisplay(body.display)),
+        JSON.stringify(sanitizeTheme(body.theme)),
+        JSON.stringify(sanitizeMeta(body.meta)),
+        JSON.stringify(access),
+        unlockAt
+      )
+      .run();
+  } catch (e) {
+    await deleteLinkCascade(env, linkId);
+    throw e;
+  }
+  return fetchNoteRow(env, linkId);
+}
+
+export { noteFromRow, fetchNoteRow, noteSelect };
+
 export function registerNoteRoutes(r) {
   // ---------- console ----------
 
@@ -211,89 +299,9 @@ export function registerNoteRoutes(r) {
   });
 
   r.post('/api/notes', async (ctx) => {
-    const user = ctx.user;
-    const caps = capsOf(user).notes;
-    if (!caps.create) throw new HttpError(403, 'forbidden', '该账户没有创建密信的权限');
     const body = await readJsonBody(ctx.req);
-    const domain = await resolveUsableDomain(ctx.env, user, body.domain_id);
-
-    const enc = body.enc === 'server' ? 'server' : 'e2e';
-    if (enc === 'e2e' && !caps.e2e) throw new HttpError(403, 'e2e_forbidden', '当前账户的密信需要使用服务端加密');
-    let cipher;
-    let kcv = null;
-    if (enc === 'e2e') {
-      try {
-        cipher = b64urlDecode(String(body.cipher || ''));
-      } catch {
-        throw new HttpError(400, 'invalid_cipher', '加密内容格式无效');
-      }
-      if (cipher.length < 29) throw new HttpError(400, 'invalid_cipher', '加密内容格式无效');
-      kcv = typeof body.kcv === 'string' && /^[A-Za-z0-9_-]{8,32}$/.test(body.kcv) ? body.kcv : null;
-      if (!kcv) throw new HttpError(400, 'invalid_cipher', '缺少密钥校验值');
-    } else {
-      const payload = body.payload && typeof body.payload === 'object' ? body.payload : null;
-      const text = typeof payload?.text === 'string' ? payload.text : '';
-      if (!text.trim()) throw new HttpError(400, 'invalid_input', '请填写密信内容');
-      cipher = await serverEncrypt(ctx.env, JSON.stringify({ v: 1, format: payload.format === 'markdown' ? 'markdown' : 'text', text }));
-    }
-    const limit = caps.max_kb * 1024 + 64;
-    if (cipher.length > limit) throw new HttpError(413, 'too_large', `内容太长，上限约 ${caps.max_kb} KB`);
-
-    let maxOpens = parseIntOr(body.max_opens, 1, { min: 0, max: 10000 });
-    if (caps.max_opens > 0 && (maxOpens === 0 || maxOpens > caps.max_opens)) {
-      throw new HttpError(400, 'too_many_opens', `打开次数最多 ${caps.max_opens} 次`);
-    }
-    let expiresAt = parseDateToMs(body.expires_at);
-    let openTtl = body.open_ttl ? parseIntOr(body.open_ttl, 0, { min: 10, max: 365 * 86400 }) : null;
-    if (caps.max_ttl_hours > 0) {
-      const latest = Date.now() + caps.max_ttl_hours * HOUR;
-      if (!expiresAt || expiresAt > latest) expiresAt = latest;
-      if (openTtl && openTtl > caps.max_ttl_hours * 3600) openTtl = caps.max_ttl_hours * 3600;
-    }
-    if (expiresAt && expiresAt < Date.now()) throw new HttpError(400, 'invalid_input', '有效期不能早于现在');
-    const password = typeof body.password === 'string' && body.password ? body.password.slice(0, 200) : null;
-    const access = sanitizeAccess(body.access);
-    let unlockAt = parseDateToMs(body.unlock_at);
-    if (unlockAt && unlockAt < Date.now()) unlockAt = null;
-    if (unlockAt && expiresAt && unlockAt >= expiresAt) throw new HttpError(400, 'invalid_input', '解锁时间不能晚于有效期');
-
-    await assertNoteQuota(ctx.env, user);
-    const linkId = await createCodeFor(ctx.env, user, 'note', {
-      domain,
-      code: body.code,
-      randomLength: body.random_length || 8,
-      note: typeof body.label === 'string' ? body.label.trim() : '',
-      expiresAt,
-    });
-    try {
-      await consumeCreation(ctx.env, user, 'notes');
-      await ctx.env.DB
-        .prepare(
-          `INSERT INTO notes(link_id, cipher, enc, kcv, size, max_opens, open_ttl, pw_hash, pw_max_fail, display, theme, meta, access, unlock_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        )
-        .bind(
-          linkId,
-          cipher,
-          enc,
-          kcv,
-          cipher.length,
-          maxOpens,
-          openTtl,
-          password ? await hashPassword(password) : null,
-          parseIntOr(body.pw_max_fail, 5, { min: 0, max: 100 }),
-          JSON.stringify(sanitizeDisplay(body.display)),
-          JSON.stringify(sanitizeTheme(body.theme)),
-          JSON.stringify(sanitizeMeta(body.meta)),
-          JSON.stringify(access),
-          unlockAt
-        )
-        .run();
-    } catch (e) {
-      await deleteLinkCascade(ctx.env, linkId);
-      throw e;
-    }
-    const row = await fetchNoteRow(ctx.env, linkId);
+    const domain = await resolveUsableDomain(ctx.env, ctx.user, body.domain_id);
+    const row = await createNote(ctx.env, ctx.user, domain, body);
     return ok({ item: noteFromRow(row) }, { status: 201 });
   });
 

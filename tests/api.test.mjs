@@ -422,6 +422,36 @@ async function main() {
   r = await api.get('/api/users', { headers: { authorization: `Bearer ${key}` } });
   check('key cannot use console api', r.status === 401, r.text);
 
+  // v1 notes & rooms
+  r = await admin.post('/api/keys', { name: 'nr', scopes: ['notes:read', 'notes:write', 'rooms:read', 'rooms:write'] });
+  check('create notes/rooms key', r.status === 201 && r.data.key.startsWith('sk_'), r.text);
+  const nrKey = r.data.key;
+  const nrh = { headers: { authorization: `Bearer ${nrKey}` } };
+
+  r = await api.post('/api/v1/notes', { domain: 's.test', enc: 'server', payload: { text: 'via api note' }, max_opens: 2 }, nrh);
+  check('v1 note create', r.status === 201 && r.data.enc === 'server' && r.data.id, r.text);
+  const nId = r.data.id;
+  r = await api.get('/api/v1/notes', nrh);
+  check('v1 note list', r.data?.total >= 1 && r.data.items.every((n) => n.cipher === undefined), r.text);
+  r = await api.get(`/api/v1/notes/${nId}`, nrh);
+  check('v1 note get', r.status === 200 && r.data.id === nId && r.data.cipher === undefined, r.text);
+  r = await api.post('/api/v1/notes', { domain: 's.test', enc: 'server', payload: { text: 'x' } }, { headers: { authorization: `Bearer ${key}` } });
+  check('v1 note needs scope', r.status === 403, r.text);
+  r = await api.del(`/api/v1/notes/${nId}`, nrh);
+  check('v1 note delete', r.status === 200 && r.data.deleted, r.text);
+
+  r = await api.post('/api/v1/rooms', { domain: 's.test', type: 'group', label: 'api room', max_members: 10 }, nrh);
+  check('v1 room create', r.status === 201 && r.data.type === 'group' && r.data.id && r.data.needs_password === false, r.text);
+  const rId = r.data.id;
+  r = await api.get('/api/v1/rooms', nrh);
+  check('v1 room list', Array.isArray(r.data?.items) && r.data.items.some((x) => x.id === rId), r.text);
+  r = await api.get(`/api/v1/rooms/${rId}`, nrh);
+  check('v1 room get', r.status === 200 && r.data.id === rId, r.text);
+  r = await api.post('/api/v1/rooms', { domain: 's.test', type: 'group' }, { headers: { authorization: `Bearer ${key}` } });
+  check('v1 room needs scope', r.status === 403, r.text);
+  r = await api.del(`/api/v1/rooms/${rId}`, nrh);
+  check('v1 room delete', r.status === 200 && r.data.deleted, r.text);
+
   // ---------- settings ----------
   r = await admin.patch('/api/settings', { site_name: '新名字', retention_days: 30 });
   check('settings update', r.data?.settings?.site_name === '新名字', r.text);

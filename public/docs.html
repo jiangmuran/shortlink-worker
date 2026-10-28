@@ -63,6 +63,10 @@
       <tr><td><code>links:write</code></td><td>创建、修改、删除短链</td></tr>
       <tr><td><code>logs:read</code></td><td>读取访问记录（受账户权限限制）</td></tr>
       <tr><td><code>domains:read</code></td><td>读取可用域名列表</td></tr>
+      <tr><td><code>notes:read</code></td><td>读取密信列表与详情（不含明文内容）</td></tr>
+      <tr><td><code>notes:write</code></td><td>创建、删除密信</td></tr>
+      <tr><td><code>rooms:read</code></td><td>读取聊天室列表与详情</td></tr>
+      <tr><td><code>rooms:write</code></td><td>创建、删除聊天室</td></tr>
     </tbody>
   </table>
 
@@ -131,6 +135,71 @@
   <div class="ep">
     <div class="line"><span class="method get">GET</span><span class="path">/api/v1/links/:id/stats</span><span class="badge badge-gray scope">links:read</span></div>
     <p class="desc">点击统计：累计 / 今日 / 7 日 / 30 日，附带最近 10 条访问（IP、地区、UA）。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method post">POST</span><span class="path">/api/v1/notes</span><span class="badge badge-gray scope">notes:write</span></div>
+    <p class="desc">创建阅后即焚密信。通过 API 创建用<strong>服务端加密</strong>（<code>enc:"server"</code>，服务器持密钥，可被服务端读取）；端到端加密需在浏览器完成，不走此接口。body 字段：</p>
+    <pre class="code">{
+  "enc": "server",                          <span class="cm">// 固定 server（API 不支持 e2e）</span>
+  "payload": { "text": "内容", "format": "text" }, <span class="cm">// format: text | markdown</span>
+  "domain": "s.example.com",                <span class="cm">// 可选，缺省第一个可用域名（也可传 id）</span>
+  "code": "secret",                         <span class="cm">// 可选，缺省随机</span>
+  "label": "备注",                           <span class="cm">// 可选</span>
+  "max_opens": 1,                           <span class="cm">// 打开次数上限，0 为不限，默认 1</span>
+  "open_ttl": 3600,                         <span class="cm">// 可选，首次打开后多少秒内有效</span>
+  "password": "可选访问密码",
+  "display": { "mode": "motion" },          <span class="cm">// 展示方式，详见控制台</span>
+  "theme": { "name": "min" },
+  "expires_at": "2027-01-01T00:00:00Z",     <span class="cm">// 可选</span>
+  "unlock_at": null                         <span class="cm">// 可选，定时解锁</span>
+}</pre>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/notes</span><span class="badge badge-gray scope">notes:read</span></div>
+    <p class="desc">列出密信。查询参数：<code>page</code>、<code>per</code>（1-100）、<code>status</code>（<code>live</code>｜<code>burned</code>）。返回不含密文或密码。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/notes/:id</span><span class="badge badge-gray scope">notes:read</span></div>
+    <p class="desc">获取单条密信的元信息（状态、打开次数、展示方式等，不含明文）。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method delete">DELETE</span><span class="path">/api/v1/notes/:id</span><span class="badge badge-gray scope">notes:write</span></div>
+    <p class="desc">删除密信及其记录。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method post">POST</span><span class="path">/api/v1/rooms</span><span class="badge badge-gray scope">rooms:write</span></div>
+    <p class="desc">创建聊天室。body 字段：</p>
+    <pre class="code">{
+  "type": "group",                          <span class="cm">// dm | group | burn</span>
+  "domain": "s.example.com",                <span class="cm">// 可选</span>
+  "code": "room",                           <span class="cm">// 可选，缺省随机</span>
+  "label": "备注",                           <span class="cm">// 可选</span>
+  "max_members": 20,                        <span class="cm">// 2-1000（dm 固定 2，受账户上限限制）</span>
+  "password": "可选访问密码",
+  "login_required": false,                  <span class="cm">// 是否要求登录后进入</span>
+  "policy": { "display": { "mode": "motion" }, "disappear": 0, "retain": 0 }
+}</pre>
+    <p class="desc">聊天内容为端到端加密，房间密钥在分享链接的 <code>#k=</code> 片段中，服务器不持有。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/rooms</span><span class="badge badge-gray scope">rooms:read</span></div>
+    <p class="desc">列出聊天室（最多 200 条）。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method get">GET</span><span class="path">/api/v1/rooms/:id</span><span class="badge badge-gray scope">rooms:read</span></div>
+    <p class="desc">获取单个聊天室详情。</p>
+  </div>
+
+  <div class="ep">
+    <div class="line"><span class="method delete">DELETE</span><span class="path">/api/v1/rooms/:id</span><span class="badge badge-gray scope">rooms:write</span></div>
+    <p class="desc">销毁并删除聊天室。</p>
   </div>
 
   <h3 class="m anchor" id="errors">错误码</h3>

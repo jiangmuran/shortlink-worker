@@ -5,7 +5,7 @@
 //
 // Numeric limits use 0 for "unlimited".
 
-export const ALL_SCOPES = ['links:read', 'links:write', 'logs:read', 'domains:read', 'notes:read', 'notes:write'];
+export const ALL_SCOPES = ['links:read', 'links:write', 'logs:read', 'domains:read', 'notes:read', 'notes:write', 'rooms:read', 'rooms:write'];
 export const LINK_MODES = ['direct', 'page', 'confirm'];
 export const ADMIN_PERMS = ['users', 'domains', 'settings', 'content'];
 

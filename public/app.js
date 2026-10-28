@@ -2438,6 +2438,8 @@ const SCOPE_OPTIONS = [
   ['domains:read', '读取域名'],
   ['notes:read', '读取密信'],
   ['notes:write', '创建密信'],
+  ['rooms:read', '读取聊天室'],
+  ['rooms:write', '创建聊天室'],
 ];
 
 const CAP_FIELDS = [
@@ -3304,6 +3306,10 @@ const SCOPES = [
   { value: 'links:write', label: '创建 / 修改 / 删除短链' },
   { value: 'logs:read', label: '读取访问记录' },
   { value: 'domains:read', label: '读取域名列表' },
+  { value: 'notes:read', label: '读取密信' },
+  { value: 'notes:write', label: '创建 / 删除密信' },
+  { value: 'rooms:read', label: '读取聊天室' },
+  { value: 'rooms:write', label: '创建 / 删除聊天室' },
 ];
 
 function openKeyEditor(onSaved) {
