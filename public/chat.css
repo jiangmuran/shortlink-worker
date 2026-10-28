@@ -4,7 +4,9 @@
    themes and their dark variants. */
 
 .rm-body { margin: 0; height: 100%; background: var(--nt-bg); color: var(--nt-text);
-  font-family: var(--nt-font); -webkit-font-smoothing: antialiased; }
+  font-family: var(--nt-font); -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
+  font-feature-settings: 'kern' 1, 'liga' 1; }
 html:has(.rm-body) { height: 100%; }
 .rm-root { height: 100vh; height: 100dvh; display: flex; overflow: hidden; }
 .rm-root *, .rm-root *::before, .rm-root *::after { box-sizing: border-box; }
@@ -59,7 +61,7 @@ html:has(.rm-body) { height: 100%; }
 .rm-top-main { flex: 1; min-width: 0; }
 .rm-top-main b { display: block; font-size: 16px; font-weight: 650; letter-spacing: -.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rm-online { font-size: 12px; color: var(--nt-muted); display: inline-flex; align-items: center; gap: 5px; }
+.rm-online { font-size: 12px; color: var(--nt-muted); display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
 .rm-online::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #30c660; box-shadow: 0 0 0 3px color-mix(in srgb,#30c660 24%,transparent); }
 .rm-online.off::before { background: var(--nt-muted); box-shadow: none; }
 .rm-icon { width: 40px; height: 40px; border-radius: 11px; border: none; background: transparent; color: var(--nt-muted);
@@ -109,7 +111,7 @@ html:has(.rm-body) { height: 100%; }
   box-shadow: 0 1px 2px rgba(0,0,0,.05); }
 .rm-msg.me .rm-body { border-color: transparent; box-shadow: 0 0 0 2px var(--nt-accent), 0 1px 2px rgba(0,0,0,.08); }
 .rm-body.nt-holdable { cursor: pointer; min-height: 44px; }
-.rm-time { font-size: 10px; margin: 3px 4px 0; color: var(--nt-muted); }
+.rm-time { font-size: 10px; margin: 3px 4px 0; color: var(--nt-muted); font-variant-numeric: tabular-nums; }
 .rm-msg.me .rm-time { text-align: right; }
 .rm-vanish { font-size: 13px; color: var(--nt-muted); letter-spacing: 4px; padding: 2px 4px; }
 .rm-msg.going { transition: opacity .4s ease; opacity: 0; }
