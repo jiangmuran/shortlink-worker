@@ -1681,17 +1681,17 @@ function openNoteComposer(domains, onSaved) {
     const m = state.mode;
     if (m === 'motion')
       return (
-        slider('mspeed', '滚动速度', 3, 30, 1, 10, 'x10') +
-        slider('contrast', '对比度', 20, 100, 1, 88, 'pct') +
-        slider('cell', '噪点粗细', 1, 4, 1, 2, 'px') +
+        slider('mspeed', '滚动速度', 3, 30, 1, 14, 'x10') +
+        slider('contrast', '对比度', 20, 100, 1, 100, 'pct') +
+        slider('cell', '噪点粗细', 1, 4, 1, 1, 'px') +
         `<label class="toggle-row" style="margin-top:4px"><div class="txt"><b>灰度噪点</b><span>默认黑白，开启后更柔和</span></div><span class="switch"><input type="checkbox" name="density"><i></i></span></label>`
       );
     if (m === 'comp')
       return (
-        slider('contrast', '对比度', 20, 100, 1, 34, 'pct') +
+        slider('contrast', '对比度', 20, 100, 1, 82, 'pct') +
         slider('interval', '翻转间隔', 1, 6, 1, 1, 'frame') +
-        slider('refresh', '噪点刷新', 0, 30, 1, 8, 'cycle') +
-        slider('cell', '噪点粗细', 1, 4, 1, 2, 'px')
+        slider('refresh', '噪点刷新', 0, 30, 1, 10, 'cycle') +
+        slider('cell', '噪点粗细', 1, 4, 1, 1, 'px')
       );
     if (m === 'type')
       return slider('chunk', '每次出现', 1, 10, 1, 2, 'char') + slider('speed', '间隔', 40, 400, 10, 120, 'ms');
@@ -1710,9 +1710,9 @@ function openNoteComposer(domains, onSaved) {
       mode: state.mode,
       hold: val('hold').checked,
       hide_on_blur: val('hide_on_blur').checked,
-      mspeed: num('mspeed', 10),
-      contrast: num('contrast', state.mode === 'comp' ? 34 : 88),
-      cell: num('cell', 2),
+      mspeed: num('mspeed', 14),
+      contrast: num('contrast', state.mode === 'comp' ? 82 : 100),
+      cell: num('cell', 1),
       density: !!val('density')?.checked ? 'gray' : 'bin',
       interval: num('interval', 1),
       refresh: num('refresh', 8),
@@ -2092,8 +2092,8 @@ function openRoomComposer(domains, onSaved) {
     `<div class="slider-row"><label>${label}<b data-out="${name}"></b></label><input type="range" name="${name}" min="${min}" max="${max}" step="${step}" value="${def}" data-fmt="${fmt || ''}"></div>`;
   function modeOptsHtml() {
     const mm = state.mode;
-    if (mm === 'motion') return slider('mspeed', '滚动速度', 3, 30, 1, 10, 'x10') + slider('contrast', '对比度', 20, 100, 1, 88, 'pct');
-    if (mm === 'comp') return slider('contrast', '对比度', 20, 100, 1, 34, 'pct') + slider('interval', '翻转间隔', 1, 6, 1, 1, 'frame');
+    if (mm === 'motion') return slider('mspeed', '滚动速度', 3, 30, 1, 14, 'x10') + slider('contrast', '对比度', 20, 100, 1, 100, 'pct');
+    if (mm === 'comp') return slider('contrast', '对比度', 20, 100, 1, 82, 'pct') + slider('interval', '翻转间隔', 1, 6, 1, 1, 'frame');
     if (mm === 'type') return slider('chunk', '每次出现', 1, 10, 1, 2, 'char') + slider('speed', '间隔', 40, 400, 10, 120, 'ms');
     if (mm === 'window') return slider('window', '同时显示', 2, 14, 1, 6, 'char') + slider('speed', '间隔', 80, 600, 10, 220, 'ms');
     if (mm === 'countdown') return slider('seconds', '显示时长', 3, 120, 1, 30, 'sec');
@@ -2110,7 +2110,7 @@ function openRoomComposer(domains, onSaved) {
     const num = (n, d) => (val(n) ? Number(val(n).value) : d);
     return {
       mode: state.mode,
-      mspeed: num('mspeed', 10), contrast: num('contrast', state.mode === 'comp' ? 34 : 88),
+      mspeed: num('mspeed', 14), contrast: num('contrast', state.mode === 'comp' ? 82 : 100),
       interval: num('interval', 1), chunk: num('chunk', 2),
       window: num('window', 6), speed: num('speed', state.mode === 'window' ? 220 : 120), seconds: num('seconds', 30),
     };

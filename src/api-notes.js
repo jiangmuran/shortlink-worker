@@ -48,10 +48,10 @@ export function sanitizeDisplay(raw) {
     hold: !!d.hold,
     hide_on_blur: !!d.hide_on_blur,
     // motion (mspeed is tenths of a pixel/frame: 3..30 -> 0.3..3.0)
-    mspeed: parseIntOr(d.mspeed, 10, { min: 3, max: 30 }),
+    mspeed: parseIntOr(d.mspeed, 14, { min: 3, max: 30 }),
     speed: parseIntOr(d.speed, 120, { min: 30, max: 2000 }),
     contrast: parseIntOr(d.contrast, 88, { min: 20, max: 100 }),
-    cell: parseIntOr(d.cell, 2, { min: 1, max: 4 }),
+    cell: parseIntOr(d.cell, 1, { min: 1, max: 4 }),
     density: d.density === 'gray' ? 'gray' : 'bin',
     // comp
     interval: parseIntOr(d.interval, 1, { min: 1, max: 6 }),

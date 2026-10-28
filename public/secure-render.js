@@ -38,8 +38,10 @@ export const SECURE_MODES = [
 export const modeInfo = (id) => SECURE_MODES.find((m) => m.id === id) || SECURE_MODES[0];
 
 const DEFAULTS = {
-  motion: { speed: 1.0, cell: 2, contrast: 88, density: 'bin' },
-  comp: { contrast: 34, interval: 1, refresh: 8, cell: 2 },
+  // cell 1 = finest noise (more noise cells per stroke = far more legible);
+  // large font + generous area make the moving text read clearly.
+  motion: { speed: 1.4, cell: 1, contrast: 100, density: 'bin' },
+  comp: { contrast: 82, interval: 1, refresh: 10, cell: 1 },
   plain: {},
   type: { chunk: 2, speed: 120 },
   window: { window: 6, speed: 220 },
@@ -126,24 +128,29 @@ export class SecureText {
   }
 
   _fontPx(cssW) {
-    return Math.round(clamp(cssW / 15, 17, 38) * (this.opts.fontScale || 1));
+    // anti-capture looks need big, bold glyphs so each stroke spans many noise
+    // cells and reads clearly while moving; crisp looks can be smaller.
+    const base = this.anti ? clamp(cssW / 9, 26, 56) : clamp(cssW / 15, 17, 38);
+    return Math.round(base * (this.opts.fontScale || 1));
   }
 
   // anti modes: low-res pixel grid canvas (1 canvas px per cell, scaled up by CSS)
   _layoutAnti() {
     const cssW = this.host.clientWidth;
     if (!cssW) return false;
-    const cell = this.params.cell || 2;
-    const cols = Math.max(48, Math.floor(cssW / cell));
-    const fontCell = Math.round(this._fontPx(cssW) / cell);
-    const gapCell = Math.round(fontCell * 0.5);
-    // measure wrapped height
+    const cell = this.params.cell || 1;
+    const cols = Math.max(60, Math.floor(cssW / cell));
+    const fontCell = Math.max(10, Math.round(this._fontPx(cssW) / cell));
+    const gapCell = Math.round(fontCell * 0.42);
+    const padCell = Math.round(fontCell * 0.7);
     _mc.width = cols;
     _mc.height = 8;
-    _mg.font = `700 ${fontCell}px ${FONT}`;
-    const lines = wrapLines(_mg, this.text || ' ', cols - 4);
+    _mg.font = `800 ${fontCell}px ${FONT}`;
+    const lines = wrapLines(_mg, this.text || ' ', cols - padCell * 2);
     const lineH = fontCell + gapCell;
-    const rows = Math.max(24, lines.length * lineH + 6);
+    const blockH = lines.length * lineH - gapCell;
+    const minRows = Math.round(150 / cell);
+    const rows = Math.max(minRows, blockH + padCell * 2);
     this.cols = cols;
     this.rows = rows;
     this.canvas.width = cols;
@@ -152,22 +159,22 @@ export class SecureText {
     this.canvas.style.height = rows * cell + 'px';
     this.img = this.ctx.createImageData(cols, rows);
     this.out = new Uint32Array(this.img.data.buffer);
-    // build mask
+    // build mask (text block vertically centered for a generous, balanced area)
     _mc.width = cols;
     _mc.height = rows;
     _mg.clearRect(0, 0, cols, rows);
-    _mg.font = `700 ${fontCell}px ${FONT}`;
+    _mg.font = `800 ${fontCell}px ${FONT}`;
     _mg.fillStyle = '#fff';
-    _mg.textAlign = 'left';
+    _mg.textAlign = 'center';
     _mg.textBaseline = 'top';
-    let y = 3;
+    let y = Math.max(padCell, Math.round((rows - blockH) / 2));
     for (const ln of lines) {
-      if (ln) _mg.fillText(ln, 3, y);
+      if (ln) _mg.fillText(ln, cols / 2, y);
       y += lineH;
     }
     const d = _mg.getImageData(0, 0, cols, rows).data;
     this.mask = new Uint8Array(cols * rows);
-    for (let i = 0, j = 3; i < this.mask.length; i++, j += 4) this.mask[i] = d[j] > 110 ? 1 : 0;
+    for (let i = 0, j = 3; i < this.mask.length; i++, j += 4) this.mask[i] = d[j] > 100 ? 1 : 0;
     this._allocAnti();
     return true;
   }
@@ -303,8 +310,10 @@ export class SecureText {
       const c = this.params.contrast / 100;
       const lut = (this._lut ||= new Uint32Array(256));
       for (let v = 0; v < 256; v++) lut[v] = gray(clamp(Math.round(128 + (v - 127.5) / 127.5 * c * 127), 0, 255));
+      // fg and bg scroll in opposite directions → strong relative motion makes
+      // the text boundary pop out to the eye while a still frame stays noise
       const oF = modp(-this.off, rows);
-      const oB = modp(Math.floor(this.off / 3), rows);
+      const oB = modp(this.off, rows);
       for (let y = 0; y < rows; y++) {
         let yf = y + oF;
         if (yf >= rows) yf -= rows;
