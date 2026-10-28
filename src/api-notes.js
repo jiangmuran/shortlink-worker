@@ -354,6 +354,37 @@ export function registerNoteRoutes(r) {
     return ok({ item: noteFromRow(row) });
   });
 
+  // ---------- composer templates (per user) ----------
+  r.get('/api/note-templates', async (ctx) => {
+    const { results } = await ctx.env.DB
+      .prepare('SELECT id, name, config, created_at FROM note_templates WHERE user_id = ? ORDER BY id DESC LIMIT 50')
+      .bind(ctx.user.id)
+      .all();
+    return ok({ items: (results || []).map((t) => ({ id: t.id, name: t.name, config: safeParseJson(t.config, {}), created_at: t.created_at })) });
+  });
+
+  r.post('/api/note-templates', async (ctx) => {
+    const body = await readJsonBody(ctx.req);
+    const name = typeof body.name === 'string' ? body.name.trim().slice(0, 40) : '';
+    if (!name) throw new HttpError(400, 'invalid_input', '请填写模板名称');
+    if (!body.config || typeof body.config !== 'object') throw new HttpError(400, 'invalid_input', '模板内容无效');
+    const config = JSON.stringify(body.config);
+    if (config.length > 4096) throw new HttpError(413, 'too_large', '模板内容过大');
+    const count = await ctx.env.DB.prepare('SELECT COUNT(*) AS n FROM note_templates WHERE user_id = ?').bind(ctx.user.id).first();
+    if (count.n >= 30) throw new HttpError(403, 'quota_exceeded', '模板数量已达上限（30 个）');
+    const res = await ctx.env.DB
+      .prepare('INSERT INTO note_templates(user_id, name, config, created_at) VALUES(?,?,?,?) RETURNING id, created_at')
+      .bind(ctx.user.id, name, config, Date.now())
+      .first();
+    return ok({ item: { id: res.id, name, config: body.config, created_at: res.created_at } }, { status: 201 });
+  });
+
+  r.delete('/api/note-templates/:id', async (ctx) => {
+    const res = await ctx.env.DB.prepare('DELETE FROM note_templates WHERE id = ? AND user_id = ?').bind(Number(ctx.params.id), ctx.user.id).run();
+    if (!res.meta.changes) throw new HttpError(404, 'not_found', '模板不存在');
+    return ok({ deleted: true });
+  });
+
   r.post('/api/notes', async (ctx) => {
     const body = await readJsonBody(ctx.req);
     const domain = await resolveUsableDomain(ctx.env, ctx.user, body.domain_id);

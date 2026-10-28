@@ -85,8 +85,28 @@ await page.waitForSelector('text=创建成功');
 ok('short url shown', (await page.textContent('.modal .code-pill')).includes('s.localhost/uilink'));
 await page.click('.modal-overlay .modal-head [data-close]');
 
-// ---------- note composer → visitor ----------
+// ---------- composer templates: save then apply ----------
 await page.click('a[href="/notes"]');
+await page.click('#newNoteBtn');
+await page.waitForSelector('#previewRoot .nt-card');
+await page.click('[data-nmode="type"]');
+await page.click('[data-theme-pick="letter"]');
+await page.selectOption('[name="max_opens"]', '2');
+page.once('dialog', (d) => d.accept('门禁模板'));
+await page.click('#tplSave');
+await page.waitForSelector('text=模板已保存');
+await page.click('.modal-overlay .modal-head [data-close]');
+await page.click('#newNoteBtn');
+await page.waitForSelector('#previewRoot .nt-card');
+await page.selectOption('#tplSelect', { label: '门禁模板' });
+await page.click('#tplApply');
+await page.waitForTimeout(200);
+ok('template applies mode', (await page.getAttribute('[data-nmode="type"]', 'class')).includes('on'));
+ok('template applies theme', (await page.getAttribute('[data-theme-pick="letter"]', 'class')).includes('on'));
+ok('template applies limit', (await page.inputValue('[name="max_opens"]')) === '2');
+await page.click('.modal-overlay .modal-head [data-close]');
+
+// ---------- note composer → visitor ----------
 await page.click('#newNoteBtn');
 await page.waitForSelector('#previewRoot .nt-card');
 await page.fill('#nText', '门禁 4721#，进门左转第二间。');

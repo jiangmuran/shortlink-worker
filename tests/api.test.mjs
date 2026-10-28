@@ -101,7 +101,7 @@ async function decryptNote(cipherB64, keyB64) {
 
 function resetDb() {
   const sql = [
-    'DELETE FROM logs', 'DELETE FROM link_daily', 'DELETE FROM notes', 'DELETE FROM links', 'DELETE FROM domains',
+    'DELETE FROM logs', 'DELETE FROM link_daily', 'DELETE FROM note_templates', 'DELETE FROM notes', 'DELETE FROM links', 'DELETE FROM domains',
     'DELETE FROM api_keys', 'DELETE FROM passkeys', 'DELETE FROM sessions', 'DELETE FROM access_tokens',
     'DELETE FROM audit_logs', 'DELETE FROM usage_counters', 'DELETE FROM users',
     "DELETE FROM groups WHERE builtin IS NULL", "DELETE FROM settings WHERE key IN ('rollup_until', 'site_name')",
@@ -323,6 +323,19 @@ async function main() {
   check('note webhook rejects private ip', r.status === 400 && r.error?.code === 'invalid_webhook', r.text);
   r = await admin.post('/api/notes', { domain_id: S, enc: 'server', payload: { text: 'x' }, webhook_url: 'https://localhost/x' });
   check('note webhook rejects localhost', r.status === 400 && r.error?.code === 'invalid_webhook', r.text);
+
+  // composer templates (per-user)
+  r = await admin.post('/api/note-templates', { name: '门禁默认', config: { theme: 'letter', mode: 'type', max_opens: 2 } });
+  check('template create', r.status === 201 && r.data.item.id && r.data.item.config.mode === 'type', r.text);
+  const tplId = r.data.item.id;
+  r = await admin.get('/api/note-templates');
+  check('template list', r.data?.items?.some((t) => t.id === tplId && t.config.theme === 'letter'), r.text);
+  r = await admin.post('/api/note-templates', { name: '', config: {} });
+  check('template needs name', r.status === 400, r.text);
+  r = await admin.del('/api/note-templates/99999999');
+  check('template delete unknown → 404', r.status === 404, r.text);
+  r = await admin.del(`/api/note-templates/${tplId}`);
+  check('template delete', r.status === 200 && r.data.deleted, r.text);
   r = await admin.get('/api/links');
   check('note not in links list', !r.data.items.some((l) => l.id === note.id), r.text);
   r = await new Client('s.test').get(`/${note.code}`, { headers: { 'user-agent': 'Mozilla/5.0' } });

@@ -939,6 +939,9 @@ tr:hover .short-url .icon-btn, .short-url .icon-btn:focus-visible { opacity: 1; 
 .modal.xwide .modal-body { padding: 0; }
 .composer { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; }
 .composer-form { padding: 20px; min-width: 0; }
+.tpl-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.tpl-bar .select { height: var(--h-sm); font-size: 12.5px; max-width: 220px; }
+.tpl-bar .tpl-spacer { flex: 1; }
 .composer-preview {
   border-left: 1px solid var(--border); background: var(--surface-2); padding: 18px 20px;
   position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; gap: 10px;

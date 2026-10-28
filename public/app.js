@@ -1570,6 +1570,13 @@ function openNoteComposer(domains, onSaved) {
     body: `
       <div class="composer">
         <form class="composer-form" novalidate>
+          <div class="tpl-bar" id="tplBar">
+            <select class="select" id="tplSelect" aria-label="模板"><option value="">从模板开始…</option></select>
+            <button type="button" class="btn btn-secondary btn-sm" id="tplApply" disabled>套用</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="tplDel" hidden>删除</button>
+            <span class="tpl-spacer"></span>
+            <button type="button" class="btn btn-secondary btn-sm" id="tplSave">存为模板</button>
+          </div>
           <div class="form-section">
             <div class="field">
               <label for="nText">内容</label>
@@ -1828,6 +1835,120 @@ function openNoteComposer(domains, onSaved) {
   paintEnc();
   paintPreview();
   setTimeout(() => val('text').focus(), 60);
+
+  // ---------- composer templates ----------
+  let templates = [];
+  const tplSel = $('#tplSelect', root);
+  const setVal = (name, v) => {
+    const el = val(name);
+    if (!el || v == null) return false;
+    if (el.tagName === 'SELECT' && !Array.from(el.options).some((o) => o.value === String(v))) return false;
+    el.value = String(v);
+    return true;
+  };
+  const setChk = (name, v) => { const el = val(name); if (el) el.checked = !!v; };
+  function captureConfig() {
+    return {
+      theme: state.theme, mode: state.mode, enc: state.enc,
+      display: readDisplay(),
+      max_opens: Number(val('max_opens').value),
+      ttl: Number(val('ttl').value),
+      open_ttl: val('open_ttl').value || '',
+      pw_max_fail: Number(val('pw_max_fail').value),
+      geo_mode: geoMode,
+      geo_list: val('geo_list').value,
+      ip_list: val('ip_list').value,
+      lock_ip: val('lock_ip').checked,
+      lock_device: val('lock_device').checked,
+    };
+  }
+  function applyConfig(cfg) {
+    if (!cfg || typeof cfg !== 'object') return;
+    const d = cfg.display || {};
+    if (e2eAllowed && (cfg.enc === 'e2e' || cfg.enc === 'server')) {
+      state.enc = cfg.enc;
+      $$('[data-enc]', root).forEach((x) => x.classList.toggle('on', x.dataset.enc === state.enc));
+    }
+    if (NOTE_THEMES.some((t) => t.id === cfg.theme)) {
+      state.theme = cfg.theme;
+      $$('[data-theme-pick]', root).forEach((x) => x.classList.toggle('on', x.dataset.themePick === state.theme));
+    }
+    const mode = d.mode || cfg.mode;
+    if (SECURE_MODES.some((x) => x.id === mode)) {
+      state.mode = mode;
+      $$('[data-nmode]', root).forEach((x) => x.classList.toggle('on', x.dataset.nmode === state.mode));
+    }
+    paintMode(); // render this mode's sliders before filling them
+    ['mspeed', 'contrast', 'cell', 'interval', 'refresh', 'chunk', 'window', 'speed', 'seconds'].forEach((k) => setVal(k, d[k]));
+    setChk('density', d.density === 'gray');
+    setChk('hold', d.hold);
+    setChk('hide_on_blur', d.hide_on_blur);
+    if (['quiet', 'message', 'redirect'].includes(d.after)) {
+      setVal('after', d.after);
+      $('#afterBox', root).hidden = d.after === 'quiet';
+      $('#afterLabel', root).textContent = d.after === 'redirect' ? '跳转地址' : '结束语';
+      setVal('after_value', d.after === 'redirect' ? d.after_url : d.after_text);
+    }
+    setVal('max_opens', cfg.max_opens);
+    setVal('ttl', cfg.ttl);
+    setVal('open_ttl', cfg.open_ttl);
+    setVal('pw_max_fail', cfg.pw_max_fail);
+    if (['off', 'allow', 'deny'].includes(cfg.geo_mode)) {
+      geoMode = cfg.geo_mode;
+      $$('[data-geo]', root).forEach((x) => x.classList.toggle('on', x.dataset.geo === geoMode));
+      val('geo_list').hidden = geoMode === 'off';
+    }
+    setVal('geo_list', cfg.geo_list);
+    setVal('ip_list', cfg.ip_list);
+    setChk('lock_ip', cfg.lock_ip);
+    setChk('lock_device', cfg.lock_device);
+    paintSliderOuts();
+    paintEnc();
+    paintPreview();
+  }
+  function renderTplOptions() {
+    tplSel.innerHTML = '<option value="">从模板开始…</option>' + templates.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+  }
+  async function loadTemplates() {
+    try {
+      const r = await api('/api/note-templates');
+      templates = r.items || [];
+      renderTplOptions();
+    } catch {}
+  }
+  tplSel.addEventListener('change', () => {
+    const has = !!tplSel.value;
+    $('#tplApply', root).disabled = !has;
+    $('#tplDel', root).hidden = !has;
+  });
+  $('#tplApply', root).addEventListener('click', () => {
+    const t = templates.find((x) => String(x.id) === tplSel.value);
+    if (t) { applyConfig(t.config); toast(`已套用「${t.name}」`); }
+  });
+  $('#tplSave', root).addEventListener('click', async () => {
+    const name = (prompt('模板名称') || '').trim();
+    if (!name) return;
+    try {
+      const r = await api('/api/note-templates', { method: 'POST', body: { name, config: captureConfig() } });
+      templates.unshift(r.item);
+      renderTplOptions();
+      tplSel.value = String(r.item.id);
+      tplSel.dispatchEvent(new Event('change'));
+      toast('模板已保存');
+    } catch (e) { toast(e.message || '保存失败', 'err'); }
+  });
+  $('#tplDel', root).addEventListener('click', async () => {
+    const t = templates.find((x) => String(x.id) === tplSel.value);
+    if (!t || !confirm(`删除模板「${t.name}」？`)) return;
+    try {
+      await api(`/api/note-templates/${t.id}`, { method: 'DELETE' });
+      templates = templates.filter((x) => x.id !== t.id);
+      renderTplOptions();
+      tplSel.dispatchEvent(new Event('change'));
+      toast('已删除');
+    } catch (e) { toast(e.message || '删除失败', 'err'); }
+  });
+  loadTemplates();
 
   $('#noteSave', root).addEventListener('click', async (ev) => {
     const errEl = $('#noteErr', root);
