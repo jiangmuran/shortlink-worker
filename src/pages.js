@@ -172,3 +172,38 @@ function animDecor(animation) {
       return '';
   }
 }
+
+// Burn-after-reading note viewer. The server only renders the public cover;
+// /_sl/note.js fetches and decrypts the content after the visitor taps "view".
+export function renderNotePage(data) {
+  const meta = data.meta || {};
+  const title = meta.title || '你收到一封密信';
+  const theme = data.theme?.name || 'min';
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  const desc = meta.hint || (data.status === 'burned' ? '这封密信已焚毁' : '打开后才能看到内容');
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>${escapeHtml(title)}</title>
+<link rel="icon" href="${FAVICON}">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta property="og:title" content="${escapeHtml(title)}">
+<meta property="og:description" content="${escapeHtml(desc)}">
+<link rel="stylesheet" href="/_sl/note.css">
+</head>
+<body class="nt-body nt-${escapeHtml(theme)}">
+<main id="note-root" class="nt-wrap">
+  <div class="nt-card">
+    <div class="nt-head"><div class="nt-title">${escapeHtml(title)}</div></div>
+    <p class="nt-hint">${escapeHtml(desc)}</p>
+    <noscript><p class="nt-hint">查看密信需要启用 JavaScript。</p></noscript>
+  </div>
+</main>
+<script type="application/json" id="note-data">${json}</script>
+<script type="module" src="/_sl/note.js"></script>
+</body>
+</html>`;
+}

@@ -133,3 +133,46 @@ function b64urlBytes(str) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
+
+// ---- Server-side note encryption (notes created without end-to-end encryption) ----
+// A random AES-256 key persisted in D1 (settings.note_secret), so admins with
+// content permission can read reported notes. End-to-end notes never use it.
+
+let noteKeyPromise = null;
+
+async function noteKey(env) {
+  if (!noteKeyPromise) {
+    noteKeyPromise = (async () => {
+      let row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'note_secret'").first();
+      if (!row?.value) {
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+        await env.DB.prepare("INSERT INTO settings(key, value) VALUES('note_secret', ?) ON CONFLICT(key) DO NOTHING").bind(hex).run();
+        row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'note_secret'").first();
+      }
+      const raw = new Uint8Array(row.value.match(/.{2}/g).map((h) => parseInt(h, 16)));
+      return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    })().catch((e) => {
+      noteKeyPromise = null;
+      throw e;
+    });
+  }
+  return noteKeyPromise;
+}
+
+export async function serverEncrypt(env, plaintext) {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await noteKey(env), new TextEncoder().encode(plaintext)));
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv, 0);
+  out.set(ct, iv.length);
+  return out;
+}
+
+export async function serverDecrypt(env, blob) {
+  const bytes = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.subarray(0, 12) }, await noteKey(env), bytes.subarray(12));
+  return new TextDecoder().decode(pt);
+}

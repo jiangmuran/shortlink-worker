@@ -2,34 +2,86 @@
 
 import { sha256Hex, verifyPassword } from './crypto.js';
 import { randomToken, safeParseJson, HttpError, parseIntOr } from './util.js';
+import { FULL_CAPS, FALLBACK_CAPS, ALL_SCOPES, ADMIN_PERMS, normalizeCaps, mergeCaps } from './caps.js';
+
+export { ALL_SCOPES };
 
 export const SESSION_COOKIE = 'sl_session';
 export const CHALLENGE_COOKIE = 'sl_challenge';
 
-// ---------- settings ----------
+// ---------- settings (cached per isolate: read on every redirect) ----------
+
+const SETTINGS_TTL = 30_000;
+let settingsCache = null;
 
 export async function getSettings(env) {
+  if (settingsCache && settingsCache.expires > Date.now()) return settingsCache.value;
   const { results } = await env.DB.prepare('SELECT key, value FROM settings').all();
   const raw = {};
   for (const r of results || []) raw[r.key] = safeParseJson(r.value, undefined);
-  return {
+  const value = {
     site_name: typeof raw.site_name === 'string' && raw.site_name.trim() ? raw.site_name.trim().slice(0, 40) : 'ShortLink',
     retention_days: parseIntOr(raw.retention_days, 90, { min: 1, max: 3650 }),
     session_days: parseIntOr(raw.session_days, 14, { min: 1, max: 90 }),
     auto_delete_expired_days: parseIntOr(raw.auto_delete_expired_days, 30, { min: 0, max: 3650 }),
     default_mode: ['direct', 'page', 'confirm'].includes(raw.default_mode) ? raw.default_mode : 'direct',
     default_style: raw.default_style && typeof raw.default_style === 'object' ? raw.default_style : {},
+    rollup_until: Number(raw.rollup_until) || 0,
   };
+  settingsCache = { value, expires: Date.now() + SETTINGS_TTL };
+  return value;
 }
 
 export async function setSettings(env, patch) {
-  const allowed = ['site_name', 'retention_days', 'session_days', 'auto_delete_expired_days', 'default_mode', 'default_style'];
+  const allowed = ['site_name', 'retention_days', 'session_days', 'auto_delete_expired_days', 'default_mode', 'default_style', 'rollup_until'];
   const stmts = [];
   for (const k of allowed) {
     if (patch[k] === undefined) continue;
     stmts.push(env.DB.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, JSON.stringify(patch[k])));
   }
   if (stmts.length) await env.DB.batch(stmts);
+  settingsCache = null;
+}
+
+// ---------- groups (cached per isolate) ----------
+
+const GROUP_TTL = 30_000;
+const groupCache = new Map();
+
+export async function getGroup(env, id) {
+  if (!id) return null;
+  const hit = groupCache.get(id);
+  if (hit && hit.expires > Date.now()) return hit.value;
+  const row = await env.DB.prepare('SELECT * FROM groups WHERE id = ?').bind(id).first();
+  const value = row ? { ...row, caps: normalizeCaps(safeParseJson(row.caps, {})) } : null;
+  groupCache.set(id, { value, expires: Date.now() + GROUP_TTL });
+  return value;
+}
+
+export function invalidateGroup(id) {
+  if (id) groupCache.delete(Number(id));
+  else groupCache.clear();
+}
+
+// Attach effective capabilities to a user row (mutates and returns it).
+export async function hydrateUser(env, user) {
+  if (!user) return user;
+  if (user.role === 'admin') {
+    user._caps = FULL_CAPS;
+    user._group = null;
+    return user;
+  }
+  const group = await getGroup(env, user.group_id);
+  const base = group ? group.caps : FALLBACK_CAPS;
+  user._group = group ? { id: group.id, name: group.name, builtin: group.builtin } : null;
+  user._caps = mergeCaps(base, normalizeCaps(safeParseJson(user.caps_override, {}), { partial: true }));
+  return user;
+}
+
+export function userActive(user) {
+  if (!user || user.disabled) return false;
+  if (user.expires_at && user.expires_at < Date.now()) return false;
+  return true;
 }
 
 // ---------- sessions ----------
@@ -79,17 +131,37 @@ async function userById(env, id) {
   return row || null;
 }
 
+export function adminPermsOf(user) {
+  if (user.is_owner) return Object.fromEntries(ADMIN_PERMS.map((p) => [p, true]));
+  if (user.role !== 'admin') return Object.fromEntries(ADMIN_PERMS.map((p) => [p, false]));
+  const raw = safeParseJson(user.admin_perms, {});
+  return Object.fromEntries(ADMIN_PERMS.map((p) => [p, !!raw[p]]));
+}
+
 export function publicUser(u) {
+  const caps = u._caps || FALLBACK_CAPS;
   return {
     id: u.id,
     username: u.username,
     display_name: u.display_name || u.username,
     role: u.role,
-    perms: u.role === 'admin' ? { create_links: true, view_logs: true, use_api: true } : safeParseJson(u.perms, {}),
+    is_owner: !!u.is_owner,
+    admin_perms: adminPermsOf(u),
+    group: u._group || null,
+    group_id: u.group_id || null,
+    caps,
+    caps_override: safeParseJson(u.caps_override, {}),
+    // legacy fields kept for API compatibility
+    perms: { create_links: !!caps.links.create, view_logs: !!caps.logs.view, use_api: !!caps.api.use },
+    quota_max_links: caps.links.max,
     domain_ids: u.role === 'admin' ? 'all' : safeParseJson(u.domain_ids, []).map(Number),
-    quota_max_links: u.quota_max_links || 0,
     disabled: !!u.disabled,
+    frozen: !!u.frozen_at,
+    expires_at: u.expires_at || null,
+    must_change_password: !!u.must_change_password,
     has_password: !!u.password_hash,
+    note: u.note || '',
+    created_via: u.created_via || '',
     created_at: u.created_at,
   };
 }
@@ -105,7 +177,7 @@ export async function resolveSessionUser(env, req, ctx) {
     return null;
   }
   const user = await userById(env, session.user_id);
-  if (!user || user.disabled) {
+  if (!userActive(user)) {
     ctx.waitUntil(env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(session.user_id).run());
     return null;
   }
@@ -118,7 +190,7 @@ export async function resolveSessionUser(env, req, ctx) {
         .run()
     );
   }
-  return { user, sessionId: hash };
+  return { user: await hydrateUser(env, user), sessionId: hash };
 }
 
 export async function destroySession(env, req) {
@@ -130,8 +202,6 @@ export async function destroySession(env, req) {
 
 // ---------- API keys ----------
 
-export const ALL_SCOPES = ['links:read', 'links:write', 'logs:read', 'domains:read'];
-
 export async function resolveApiKey(env, req, ctx) {
   const auth = req.headers.get('authorization') || '';
   const m = auth.match(/^Bearer\s+(sk_[A-Za-z0-9_-]+)\s*$/i);
@@ -141,9 +211,17 @@ export async function resolveApiKey(env, req, ctx) {
   if (!key) return null;
   if (key.expires_at && key.expires_at < Date.now()) return null;
   const user = await userById(env, key.user_id);
-  if (!user || user.disabled) return null;
+  if (!userActive(user)) return null;
+  await hydrateUser(env, user);
+  if (!user._caps.api.use) return null;
   ctx.waitUntil(env.DB.prepare('UPDATE api_keys SET last_used_at = ? WHERE id = ?').bind(Date.now(), key.id).run());
   return { user, key };
+}
+
+// Scopes a key may actually use: what it was created with ∩ what the group allows now.
+export function effectiveScopes(user, key) {
+  const allowed = user._caps.api.scopes;
+  return safeParseJson(key.scopes, []).filter((s) => allowed.includes(s));
 }
 
 // ---------- permissions ----------
@@ -152,20 +230,29 @@ export function isAdmin(user) {
   return user.role === 'admin';
 }
 
-export function userPerms(user) {
-  return safeParseJson(user.perms, {});
+export function adminPerm(user, perm) {
+  return adminPermsOf(user)[perm] === true;
+}
+
+// Sees and manages everyone's links, notes and logs.
+export function canSeeAll(user) {
+  return adminPerm(user, 'content');
+}
+
+export function capsOf(user) {
+  return user._caps || FALLBACK_CAPS;
 }
 
 export function canCreateLinks(user) {
-  return isAdmin(user) || !!userPerms(user).create_links;
+  return !!capsOf(user).links.create;
 }
 
 export function canViewLogs(user) {
-  return isAdmin(user) || !!userPerms(user).view_logs;
+  return !!capsOf(user).logs.view;
 }
 
 export function canUseApi(user) {
-  return isAdmin(user) || !!userPerms(user).use_api;
+  return !!capsOf(user).api.use;
 }
 
 export function allowedDomainIds(user) {
@@ -179,7 +266,7 @@ export function canAccessDomain(user, domainId) {
 }
 
 export function canManageLink(user, link) {
-  return isAdmin(user) || link.created_by === user.id;
+  return canSeeAll(user) || link.created_by === user.id;
 }
 
 // ---------- login ----------
@@ -192,6 +279,12 @@ export async function loginWithPassword(env, username, password) {
   // constant-ish response regardless of user existence
   const valid = user ? await verifyPassword(password, user.password_hash) : await verifyPassword(password, 'pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
   if (!user || !valid) throw new HttpError(401, 'bad_credentials', '用户名或密码错误');
-  if (user.disabled) throw new HttpError(403, 'user_disabled', '该账户已被停用');
+  assertCanSignIn(user);
   return user;
+}
+
+export function assertCanSignIn(user) {
+  if (user.frozen_at) throw new HttpError(403, 'user_frozen', '该账户已被冻结');
+  if (user.disabled) throw new HttpError(403, 'user_disabled', '该账户已被停用');
+  if (user.expires_at && user.expires_at < Date.now()) throw new HttpError(403, 'user_expired', '该账户已过期');
 }

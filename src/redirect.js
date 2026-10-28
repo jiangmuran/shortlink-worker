@@ -2,7 +2,8 @@
 // interstitial or confirmation page, with access logging.
 
 import { getSettings } from './auth.js';
-import { renderPageRedirect, renderConfirmPage, renderStatusPage, renderLanding } from './pages.js';
+import { renderPageRedirect, renderConfirmPage, renderStatusPage, renderLanding, renderNotePage } from './pages.js';
+import { noteStatus } from './api-notes.js';
 import { safeParseJson } from './util.js';
 
 const ROBOTS = 'User-agent: *\nAllow: /\n';
@@ -16,6 +17,12 @@ export async function handleRedirect(req, env, ctx, domain) {
   }
   if (path === '/favicon.ico' || path === '/apple-touch-icon.png' || path === '/apple-touch-icon-precomposed.png') {
     return new Response(null, { status: 204, headers: { 'cache-control': 'public, max-age=86400' } });
+  }
+  if (path.startsWith('/_sl/') && /^\/_sl\/[a-z0-9.-]+\.(js|css)$/.test(path)) {
+    const asset = await env.ASSETS.fetch(new Request(new URL(path.slice(4), url.origin)));
+    const res = new Response(asset.body, asset);
+    res.headers.set('cache-control', 'public, max-age=300');
+    return res;
   }
   if (path === '/robots.txt') {
     return new Response(ROBOTS, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
@@ -55,6 +62,10 @@ export async function handleRedirect(req, env, ctx, domain) {
       }),
       404
     );
+  }
+
+  if (link.kind === 'note') {
+    return notePage(req, env, ctx, link, settings, domain);
   }
 
   if (!link.enabled) {
@@ -110,6 +121,47 @@ export async function handleRedirect(req, env, ctx, domain) {
   return new Response(null, {
     status: 302,
     headers: { location: link.target, 'cache-control': 'no-store, max-age=0' },
+  });
+}
+
+const BOT_UA = /bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|telegram|discord|slack|skype|line\/|vkshare|pinterest|quora|redditbot|bingpreview|googleother|curl|wget|python|okhttp|go-http|java\/|headless/i;
+
+async function notePage(req, env, ctx, link, settings, domain) {
+  const note = await env.DB.prepare('SELECT * FROM notes WHERE link_id = ?').bind(link.id).first();
+  if (!note) {
+    return html(renderStatusPage({ heading: '链接不存在', message: '没有找到这封密信。', siteName: settings.site_name, backUrl: '/' }), 404);
+  }
+  const status = noteStatus({ ...note, enabled: link.enabled, expires_at: link.expires_at });
+  const ua = req.headers.get('user-agent') || '';
+  ctx.waitUntil(writeLog(env, link.id, req, 'view'));
+  const data = {
+    code: link.code,
+    host: domain.hostname,
+    site: settings.site_name,
+    status,
+    burn_reason: note.burn_reason || null,
+    enc: note.enc,
+    meta: safeParseJson(note.meta, {}),
+    theme: safeParseJson(note.theme, {}),
+    display: safeParseJson(note.display, {}),
+    max_opens: note.max_opens,
+    opens: note.opens,
+    open_ttl: note.open_ttl || null,
+    first_open_at: note.first_open_at || null,
+    expires_at: link.expires_at || null,
+    needs_password: !!note.pw_hash,
+    attempts_left: note.pw_hash && note.pw_max_fail > 0 ? Math.max(0, note.pw_max_fail - note.pw_fail) : null,
+    is_bot: BOT_UA.test(ua),
+  };
+  return new Response(renderNotePage(data), {
+    status: status === 'burned' || status === 'expired' ? 410 : 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store, max-age=0',
+      'referrer-policy': 'no-referrer',
+      'x-robots-tag': 'noindex, nofollow',
+      'x-content-type-options': 'nosniff',
+    },
   });
 }
 

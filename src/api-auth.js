@@ -7,13 +7,52 @@ import {
   clearSessionCookieHeader,
   getSettings,
   publicUser,
+  hydrateUser,
   loginWithPassword,
+  assertCanSignIn,
   CHALLENGE_COOKIE,
   SESSION_COOKIE,
 } from './auth.js';
+import { audit } from './audit.js';
+import { todayUsage } from './usage.js';
+import { sha256Hex } from './crypto.js';
 import { hashPassword, verifyPassword, signValue, verifyValue, ensureSignSecret } from './crypto.js';
 import { generateChallenge, verifyRegistration, verifyAssertion } from './webauthn.js';
-import { ok, HttpError, readJsonBody, b64urlEncode, isValidHostname } from './util.js';
+import { ok, HttpError, readJsonBody, b64urlEncode, isValidHostname, safeParseJson } from './util.js';
+
+const DAY = 86400000;
+
+// Consume one use of an invite / login token atomically; returns the row or throws.
+async function consumeToken(env, token, kind) {
+  if (typeof token !== 'string' || !/^(inv|lgn)_[A-Za-z0-9_-]{20,}$/.test(token)) {
+    throw new HttpError(404, 'invalid_token', '链接无效');
+  }
+  const hash = await sha256Hex(token);
+  const now = Date.now();
+  const row = await env.DB
+    .prepare(
+      `UPDATE access_tokens SET uses = uses + 1, last_used_at = ?
+       WHERE token_hash = ? AND kind = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) AND (max_uses = 0 OR uses < max_uses)
+       RETURNING *`
+    )
+    .bind(now, hash, kind, now)
+    .first();
+  if (!row) throw new HttpError(410, 'token_unusable', '链接已失效：可能已过期、已被撤销或次数用完');
+  return row;
+}
+
+async function peekToken(env, token, kind) {
+  if (typeof token !== 'string' || !/^(inv|lgn)_[A-Za-z0-9_-]{20,}$/.test(token)) {
+    throw new HttpError(404, 'invalid_token', '链接无效');
+  }
+  const row = await env.DB.prepare('SELECT * FROM access_tokens WHERE token_hash = ? AND kind = ?').bind(await sha256Hex(token), kind).first();
+  if (!row) throw new HttpError(404, 'invalid_token', '链接无效');
+  const now = Date.now();
+  if (row.revoked_at || (row.expires_at && row.expires_at < now) || (row.max_uses > 0 && row.uses >= row.max_uses)) {
+    throw new HttpError(410, 'token_unusable', '链接已失效：可能已过期、已被撤销或次数用完');
+  }
+  return row;
+}
 
 const CHALLENGE_TTL_MS = 3 * 60 * 1000;
 
@@ -73,7 +112,8 @@ export function registerAuthRoutes(r) {
       const passwordHash = await hashPassword(password);
       const res = await ctx.env.DB
         .prepare(
-          'INSERT INTO users(username, display_name, password_hash, role, created_at, updated_at) VALUES(?,?,?,?,?,?)'
+          `INSERT INTO users(username, display_name, password_hash, role, created_at, updated_at, is_owner, admin_perms, created_via)
+           VALUES(?,?,?,?,?,?,1,'{"users":true,"domains":true,"settings":true,"content":true}','setup')`
         )
         .bind(username, username, passwordHash, 'admin', now, now)
         .run();
@@ -104,8 +144,16 @@ export function registerAuthRoutes(r) {
     '/api/auth/login',
     async (ctx) => {
       const body = await readJsonBody(ctx.req);
-      const user = await loginWithPassword(ctx.env, body.username, body.password);
+      let user;
+      try {
+        user = await loginWithPassword(ctx.env, body.username, body.password);
+      } catch (e) {
+        audit(ctx, 'login.failed', { actorId: null, detail: String(body.username || '').slice(0, 40) + '：' + e.message });
+        throw e;
+      }
       const session = await createSession(ctx.env, ctx.req, user.id);
+      audit(ctx, 'login.password', { actorId: user.id });
+      await hydrateUser(ctx.env, user);
       return ok({ user: publicUser(user) }, {
         headers: { 'set-cookie': sessionCookieHeader(session.token, session.maxAge) },
       });
@@ -167,7 +215,8 @@ export function registerAuthRoutes(r) {
       const passkey = await ctx.env.DB.prepare('SELECT * FROM passkeys WHERE credential_id = ?').bind(credentialId).first();
       if (!passkey) throw new HttpError(401, 'unknown_credential', '未识别的通行密钥');
       const user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(passkey.user_id).first();
-      if (!user || user.disabled) throw new HttpError(403, 'user_disabled', '该账户不可用');
+      if (!user) throw new HttpError(403, 'user_disabled', '该账户不可用');
+      assertCanSignIn(user);
 
       let result;
       try {
@@ -186,10 +235,110 @@ export function registerAuthRoutes(r) {
           .run()
       );
       const session = await createSession(ctx.env, ctx.req, user.id);
+      audit(ctx, 'login.passkey', { actorId: user.id });
+      await hydrateUser(ctx.env, user);
       const res = ok({ user: publicUser(user) });
       res.headers.append('set-cookie', sessionCookieHeader(session.token, session.maxAge));
       res.headers.append('set-cookie', clearChallengeCookie());
       return res;
+    },
+    { auth: 'none' }
+  );
+
+  // ---------- invite links (public) ----------
+  r.get(
+    '/api/invite/:token',
+    async (ctx) => {
+      const row = await peekToken(ctx.env, ctx.params.token, 'invite');
+      const group = row.group_id ? await ctx.env.DB.prepare('SELECT name FROM groups WHERE id = ?').bind(row.group_id).first() : null;
+      const settings = await getSettings(ctx.env);
+      return ok({
+        site_name: settings.site_name,
+        label: row.label,
+        group: group?.name || null,
+        account_days: row.account_days || null,
+        expires_at: row.expires_at || null,
+      });
+    },
+    { auth: 'none' }
+  );
+
+  r.post(
+    '/api/invite/:token',
+    async (ctx) => {
+      const body = await readJsonBody(ctx.req);
+      const username = String(body.username || '').trim().toLowerCase();
+      const password = String(body.password || '');
+      if (!/^[a-z0-9_.-]{2,32}$/.test(username)) throw new HttpError(400, 'invalid_username', '用户名需为 2-32 位字母、数字或 _ . -');
+      if (password.length < 8) throw new HttpError(400, 'weak_password', '密码至少需要 8 个字符');
+      await peekToken(ctx.env, ctx.params.token, 'invite');
+      const exists = await ctx.env.DB.prepare('SELECT 1 FROM users WHERE username = ?').bind(username).first();
+      if (exists) throw new HttpError(409, 'username_taken', '用户名已被使用，换一个吧');
+      const token = await consumeToken(ctx.env, ctx.params.token, 'invite');
+      const now = Date.now();
+      const res = await ctx.env.DB
+        .prepare(
+          `INSERT INTO users(username, display_name, password_hash, role, perms, domain_ids, quota_max_links, disabled, created_at, updated_at,
+             group_id, caps_override, admin_perms, expires_at, must_change_password, note, created_via)
+           VALUES(?,?,?,'user','{}',?,0,0,?,?,?,'{}','{}',?,0,?,?)`
+        )
+        .bind(
+          username,
+          String(body.display_name || '').trim().slice(0, 60) || username,
+          await hashPassword(password),
+          token.domain_ids || '[]',
+          now,
+          now,
+          token.group_id,
+          token.account_days ? now + token.account_days * DAY : null,
+          token.label ? `邀请：${token.label}` : '',
+          `invite:${token.id}`
+        )
+        .run();
+      const userId = res.meta.last_row_id;
+      audit(ctx, 'invite.use', { actorId: userId, type: 'token', id: token.id, detail: `${username} 通过邀请注册` });
+      const session = await createSession(ctx.env, ctx.req, userId);
+      return ok({ user: { id: userId, username } }, {
+        status: 201,
+        headers: { 'set-cookie': sessionCookieHeader(session.token, session.maxAge) },
+      });
+    },
+    { auth: 'none' }
+  );
+
+  // ---------- login links (public) ----------
+  r.get(
+    '/api/login-link/:token',
+    async (ctx) => {
+      const row = await peekToken(ctx.env, ctx.params.token, 'login');
+      const user = await ctx.env.DB.prepare('SELECT username, display_name FROM users WHERE id = ?').bind(row.user_id).first();
+      if (!user) throw new HttpError(410, 'token_unusable', '链接已失效');
+      const settings = await getSettings(ctx.env);
+      return ok({
+        site_name: settings.site_name,
+        username: user.username,
+        display_name: user.display_name || user.username,
+        expires_at: row.expires_at || null,
+        uses_left: row.max_uses > 0 ? row.max_uses - row.uses : null,
+      });
+    },
+    { auth: 'none' }
+  );
+
+  r.post(
+    '/api/login-link/:token',
+    async (ctx) => {
+      const row = await peekToken(ctx.env, ctx.params.token, 'login');
+      const user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(row.user_id).first();
+      if (!user) throw new HttpError(410, 'token_unusable', '链接已失效');
+      assertCanSignIn(user);
+      await consumeToken(ctx.env, ctx.params.token, 'login');
+      const session = await createSession(ctx.env, ctx.req, user.id);
+      audit(ctx, 'login.link', { actorId: user.id, type: 'token', id: row.id, detail: row.label });
+      await hydrateUser(ctx.env, user);
+      return ok({ user: publicUser(user) }, {
+        headers: { 'set-cookie': sessionCookieHeader(session.token, session.maxAge) },
+      });
     },
     { auth: 'none' }
   );
@@ -200,7 +349,7 @@ export function registerAuthRoutes(r) {
       .prepare('SELECT id, name, transports, backup_eligible, backed_up, created_at, credential_id FROM passkeys WHERE user_id = ? ORDER BY id DESC')
       .bind(ctx.user.id)
       .all();
-    return ok({ user: publicUser(ctx.user), passkeys: passkeys || [] });
+    return ok({ user: publicUser(ctx.user), passkeys: passkeys || [], usage_today: await todayUsage(ctx.env, ctx.user.id) });
   });
 
   r.patch('/api/me', async (ctx) => {
@@ -209,6 +358,7 @@ export function registerAuthRoutes(r) {
     if (displayName === undefined) return ok({ user: publicUser(ctx.user) });
     await ctx.env.DB.prepare('UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?').bind(displayName, Date.now(), ctx.user.id).run();
     const user = await ctx.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(ctx.user.id).first();
+    await hydrateUser(ctx.env, user);
     return ok({ user: publicUser(user) });
   });
 
@@ -222,7 +372,8 @@ export function registerAuthRoutes(r) {
       if (!valid) throw new HttpError(401, 'bad_credentials', '当前密码不正确');
     }
     const hash = await hashPassword(next);
-    await ctx.env.DB.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').bind(hash, Date.now(), ctx.user.id).run();
+    await ctx.env.DB.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = ? WHERE id = ?').bind(hash, Date.now(), ctx.user.id).run();
+    audit(ctx, 'password.change', {});
     // revoke all other sessions
     const sid = ctx.sessionId;
     await ctx.env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').bind(ctx.user.id, sid).run();

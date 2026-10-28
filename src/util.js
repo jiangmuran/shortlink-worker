@@ -97,7 +97,7 @@ export function ok(data, init = {}) {
 
 export function fail(err) {
   if (err instanceof HttpError) {
-    return json({ ok: false, error: { code: err.code, message: err.message } }, { status: err.status });
+    return json({ ok: false, error: { code: err.code, message: err.message, ...(err.extra || {}) } }, { status: err.status });
   }
   console.error('unhandled error:', err);
   return json({ ok: false, error: { code: 'internal', message: '服务器内部错误' } }, { status: 500 });

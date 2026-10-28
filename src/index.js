@@ -8,37 +8,21 @@ import { registerAuthRoutes } from './api-auth.js';
 import { registerMainRoutes } from './api-main.js';
 import { registerAdminRoutes } from './api-admin.js';
 import { registerV1Routes } from './api-v1.js';
-import { resolveSessionUser, resolveApiKey, isAdmin } from './auth.js';
+import { resolveSessionUser, resolveApiKey, isAdmin, adminPerm, effectiveScopes } from './auth.js';
+import { registerNoteRoutes } from './api-notes.js';
+import { lookupDomain, hostOf } from './domains.js';
 import { handleRedirect } from './redirect.js';
-import { runCleanup } from './cleanup.js';
-import { ok, fail, HttpError, safeParseJson } from './util.js';
+import { runMaintenance } from './cleanup.js';
+import { ok, fail, HttpError } from './util.js';
 
 const api = createRouter();
 registerAuthRoutes(api);
 registerMainRoutes(api);
 registerAdminRoutes(api);
 registerV1Routes(api);
+registerNoteRoutes(api);
 
 api.get('/api/health', () => ok({ status: 'ok', time: Date.now() }), { auth: 'none' });
-
-// ---------- domain routing (tiny TTL cache on the hot redirect path) ----------
-
-const domainCache = new Map();
-const DOMAIN_CACHE_TTL = 10_000;
-
-async function lookupDomain(env, hostname) {
-  const hit = domainCache.get(hostname);
-  if (hit && hit.expires > Date.now()) return hit.value;
-  const row = await env.DB.prepare('SELECT * FROM domains WHERE hostname = ?').bind(hostname).first();
-  if (domainCache.size > 500) domainCache.clear();
-  domainCache.set(hostname, { value: row || null, expires: Date.now() + DOMAIN_CACHE_TTL });
-  return row || null;
-}
-
-function hostOf(req) {
-  const h = req.headers.get('host') || new URL(req.url).hostname;
-  return h.split(':')[0].toLowerCase();
-}
 
 // ---------- entry ----------
 
@@ -77,7 +61,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
-      runCleanup(env).then(
+      runMaintenance(env).then(
         (r) => console.log('cleanup', JSON.stringify(r)),
         (e) => console.error('cleanup failed', e)
       )
@@ -114,6 +98,8 @@ function withCors(res) {
   return out;
 }
 
+const PASSWORD_GATE_ALLOW = new Set(['GET /api/me', 'POST /api/me/password', 'POST /api/auth/logout', 'GET /api/bootstrap']);
+
 async function handleApi(req, env, ctx, url) {
   const path = url.pathname;
   const isV1 = path.startsWith('/api/v1');
@@ -137,8 +123,14 @@ async function handleApi(req, env, ctx, url) {
         if (route.opts.auth === 'admin' && !isAdmin(session.user)) {
           throw new HttpError(403, 'forbidden', '需要管理员权限');
         }
+        if (route.opts.perm && !adminPerm(session.user, route.opts.perm)) {
+          throw new HttpError(403, 'forbidden', '你的管理员账户没有这项权限');
+        }
         c.user = session.user;
         c.sessionId = session.sessionId;
+        if (session.user.must_change_password && !PASSWORD_GATE_ALLOW.has(`${req.method} ${path}`)) {
+          throw new HttpError(403, 'password_change_required', '请先修改初始密码');
+        }
         // cross-site protection for cookie-authenticated mutations
         if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
           const origin = req.headers.get('origin');
@@ -162,7 +154,8 @@ async function handleApi(req, env, ctx, url) {
           if (route.opts.auth !== 'key') {
             throw new HttpError(401, 'unauthorized', '此接口不支持 API 密钥，请使用 /api/v1');
           }
-          const scopes = safeParseJson(keyAuth.key.scopes, []);
+          const scopes = effectiveScopes(keyAuth.user, keyAuth.key);
+          keyAuth.key._scopes = scopes;
           if (route.opts.scope && !scopes.includes(route.opts.scope)) {
             throw new HttpError(403, 'insufficient_scope', `该密钥缺少 ${route.opts.scope} 权限`);
           }
