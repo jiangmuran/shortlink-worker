@@ -2,7 +2,7 @@
 // push room config to the Durable Object, then forward the upgrade to it.
 
 import { lookupDomain, hostOf } from './domains.js';
-import { verifyPassword } from './crypto.js';
+import { verifyPassword, ensureSignSecret, verifyValue } from './crypto.js';
 import { resolveSessionUser } from './auth.js';
 import { safeParseJson } from './util.js';
 
@@ -71,6 +71,13 @@ export async function handleRoomSocket(req, env, ctx, url) {
     tz: (q.get('tz') || '').slice(0, 40),
     isOwner: !!(session && session.user && session.user.id === row.created_by),
   };
+  // owner token issued by the console (works cross-domain)
+  const ot = q.get('o');
+  if (!member.isOwner && ot) {
+    await ensureSignSecret(env);
+    const payload = await verifyValue(ot);
+    if (payload && payload.purpose === 'room-owner' && payload.r === row.id) member.isOwner = true;
+  }
 
   const config = {
     type: row.type,

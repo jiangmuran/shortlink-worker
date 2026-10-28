@@ -320,6 +320,51 @@ await shot(alice, 'chat-room');
 await ca.close();
 await cb.close();
 
+// ---------- owner moderation: enter as owner, kick, lock ----------
+// owner enters via the console (issues a signed owner token in the URL)
+const roomCode = roomUrl.match(/s\.localhost\/([A-Za-z0-9]+)/)[1];
+const ownerUrl = await page.evaluate(async (code) => {
+  const rooms = (await (await fetch('/api/rooms')).json()).data.items;
+  const r = rooms.find((x) => x.code === code);
+  const t = (await (await fetch(`/api/rooms/${r.id}/enter`, { method: 'POST' })).json()).data.token;
+  return t;
+}, roomCode);
+async function joinRoomRaw(label, url, nick) {
+  const { ctx, page: rp } = await newPage(label);
+  await rp.goto(url);
+  await rp.waitForSelector('#joinForm');
+  await rp.fill('[name=nick]', nick);
+  await rp.click('#joinForm button[type="submit"]');
+  await rp.waitForSelector('.rm-shell', { timeout: 8000 });
+  return { ctx, rp };
+}
+const ownerEnterUrl = (() => { const h = roomVisit.indexOf('#'); return `${roomVisit.slice(0, h)}?o=${encodeURIComponent(ownerUrl)}${roomVisit.slice(h)}`; })();
+const { ctx: co, rp: owner } = await joinRoomRaw('room-owner', ownerEnterUrl, '房主');
+await owner.waitForSelector('.rm-shell');
+const openPanel = async (pg) => { if (await pg.locator('#rmPeople').isVisible()) { await pg.click('#rmPeople'); } };
+await openPanel(owner);
+await owner.waitForSelector('#rmLock', { state: 'visible', timeout: 6000 });
+ok('owner sees lock control', true);
+const { ctx: cg, rp: guest2 } = await joinRoomRaw('room-guest', roomVisit, '路人');
+await owner.waitForFunction(() => [...document.querySelectorAll('.rm-member')].length >= 2, { timeout: 8000 });
+await owner.waitForSelector('[data-kick]', { state: 'visible', timeout: 6000 });
+ok('owner can kick a member', (await owner.locator('[data-kick]').count()) >= 1);
+await owner.click('[data-kick]');
+await guest2.waitForSelector('.rm-end', { timeout: 8000 });
+ok('kicked member is removed', (await guest2.textContent('.rm-end')).includes('离开'));
+// lock the room; a new visitor cannot join
+await owner.click('#rmLock');
+await owner.waitForTimeout(400);
+const { page: guest3 } = await newPage('room-locked');
+await guest3.goto(roomVisit);
+await guest3.waitForSelector('#joinForm');
+await guest3.fill('[name=nick]', '迟到');
+await guest3.click('#joinForm button[type="submit"]');
+await guest3.waitForFunction(() => document.querySelector('.rm-err') && !document.querySelector('.rm-err').hidden, { timeout: 8000 }).catch(() => {});
+ok('locked room rejects new joiner', (await guest3.textContent('body')).includes('锁定'));
+await co.close();
+await cg.close();
+
 // ---------- mobile smoke ----------
 const { page: mob } = await newPage('mobile', { viewport: { width: 390, height: 844 } });
 await mob.goto(visitUrl);

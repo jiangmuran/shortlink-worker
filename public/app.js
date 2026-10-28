@@ -1958,17 +1958,13 @@ routes['/rooms'] = {
               <td class="dim hide-md">${esc(disp)}${p.disappear ? ` · 阅后 ${p.disappear}s` : ''}</td>
               <td data-th="创建" class="nowrap dim">${fmtRelative(rm.created_at)}${can.content() && rm.owner && rm.owner.id !== me.id ? `<div class="cell-sub">${esc(rm.owner.username)}</div>` : ''}</td>
               <td class="cell-actions"><div class="row-actions">
-                ${rm.room_status === 'open' ? `<a class="icon-btn" href="${esc(rm.url)}${roomKeyUrl(rm.id) ? '' : ''}" title="进入" aria-label="进入" data-enter="${rm.id}">${I.external}</a>` : ''}
+                ${rm.room_status === 'open' ? `<button class="icon-btn" data-enter="${rm.id}" title="进入（房主）" aria-label="进入">${I.external}</button>` : ''}
                 <button class="icon-btn" data-rmenu="${rm.id}" title="更多" aria-label="更多">${I.dots}</button>
               </div></td>
             </tr>`;
           }).join('')}</tbody></table></div>`;
       const byId = new Map(data.items.map((rm) => [String(rm.id), rm]));
-      $$('[data-enter]', box).forEach((a) => a.addEventListener('click', (e) => {
-        const rm = byId.get(a.dataset.enter);
-        const full = roomKeyUrl(rm.id);
-        if (full) { a.href = full; }
-      }));
+      $$('[data-enter]', box).forEach((a) => a.addEventListener('click', () => enterRoomAsOwner(byId.get(a.dataset.enter))));
       $$('[data-rmenu]', box).forEach((b) => b.addEventListener('click', () => {
         const rm = byId.get(b.dataset.rmenu);
         openMenu(b, [
@@ -1989,6 +1985,26 @@ routes['/rooms'] = {
     load();
   },
 };
+
+async function enterRoomAsOwner(rm) {
+  const full = roomKeyUrl(rm.id);
+  if (!full) {
+    openModal({
+      title: '无法以房主身份进入',
+      body: `<p class="modal-text">房间密钥只保存在创建它的那个浏览器里。换了浏览器就只能用邀请链接以普通成员身份加入，无法进行房主管理。</p>`,
+      footer: '<button class="btn btn-primary" data-close>知道了</button>',
+    });
+    return;
+  }
+  try {
+    const { token } = await api(`/api/rooms/${rm.id}/enter`, { method: 'POST' });
+    const hash = full.indexOf('#');
+    const url = `${full.slice(0, hash)}?o=${encodeURIComponent(token)}${full.slice(hash)}`;
+    window.open(url, '_blank', 'noopener');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
 
 async function copyRoomLink(rm) {
   const full = roomKeyUrl(rm.id);

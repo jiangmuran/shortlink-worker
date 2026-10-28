@@ -8,7 +8,7 @@
 import { capsOf, canSeeAll, isAdmin, getSettings } from './auth.js';
 import { createCodeFor, resolveUsableDomain, linkFromRow, fetchLinkRow, deleteLinkCascade } from './links-service.js';
 import { lookupDomain, hostOf } from './domains.js';
-import { hashPassword } from './crypto.js';
+import { hashPassword, ensureSignSecret, signValue } from './crypto.js';
 import { audit } from './audit.js';
 import { ok, HttpError, readJsonBody, parseIntOr, safeParseJson } from './util.js';
 import { NOTE_THEMES, sanitizeDisplay, sanitizeTheme } from './api-notes.js';
@@ -106,6 +106,16 @@ export function registerChatRoutes(r) {
     return ok({ item: roomFromRow(row, row) }, { status: 201 });
   });
 
+  // Owner entry token — lets the room creator act as owner even though the room
+  // lives on a different host where their console session cookie isn't sent.
+  r.post('/api/rooms/:id/enter', async (ctx) => {
+    const row = await fetchRoom(ctx.env, ctx.params.id);
+    if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '聊天室不存在');
+    await ensureSignSecret(ctx.env);
+    const token = await signValue({ r: row.id, purpose: 'room-owner', exp: Date.now() + 6 * 3600 * 1000 });
+    return ok({ token });
+  });
+
   r.post('/api/rooms/:id/destroy', async (ctx) => {
     const row = await fetchRoom(ctx.env, ctx.params.id);
     if (!row || (!canSeeAll(ctx.user) && row.created_by !== ctx.user.id)) throw new HttpError(404, 'not_found', '聊天室不存在');
@@ -149,7 +159,7 @@ export function registerChatRoutes(r) {
       const settings = await getSettings(ctx.env);
       const policy = safeParseJson(row.policy, {});
       const access = safeParseJson(row.access, {});
-      const live = await roomCount(ctx.env, row.id);
+      const live = await roomInfo(ctx.env, row.id);
       return ok({
         site: settings.site_name,
         code: row.code,
@@ -157,7 +167,8 @@ export function registerChatRoutes(r) {
         type: row.type,
         status: row.destroyed_at ? 'destroyed' : row.enabled ? 'open' : 'closed',
         max_members: row.max_members,
-        online: live,
+        online: live.count,
+        locked: live.locked,
         theme: safeParseJson(row.theme || JSON.stringify(policy.theme || {}), policy.theme || {}),
         policy: { display: policy.display, disappear: policy.disappear, hold: policy.hold, visible: policy.visible, type: row.type },
         needs_password: !!access.pw_hash,
@@ -168,14 +179,13 @@ export function registerChatRoutes(r) {
   );
 }
 
-export async function roomCount(env, linkId) {
+export async function roomInfo(env, linkId) {
   try {
     const stub = env.ROOM.get(env.ROOM.idFromName(`room:${linkId}`));
-    const r = await stub.fetch('https://room/info');
-    const j = await r.json();
-    return j.count || 0;
+    const j = await (await stub.fetch('https://room/info')).json();
+    return { count: j.count || 0, locked: !!j.locked };
   } catch {
-    return 0;
+    return { count: 0, locked: false };
   }
 }
 

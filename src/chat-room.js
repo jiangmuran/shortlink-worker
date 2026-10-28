@@ -34,7 +34,7 @@ export class ChatRoom {
     }
 
     if (path.endsWith('/info')) {
-      return Response.json({ ok: true, members: this.members(), count: this.ctx.getWebSockets().length });
+      return Response.json({ ok: true, count: this.ctx.getWebSockets().length, locked: !!(await this.ctx.storage.get('locked')) });
     }
 
     if (path.endsWith('/destroy')) {
@@ -56,6 +56,7 @@ export class ChatRoom {
       if (this.ctx.getWebSockets().length >= max) return new Response('room full', { status: 409 });
 
       const member = JSON.parse(decodeURIComponent(url.searchParams.get('m') || '%7B%7D'));
+      if ((await this.ctx.storage.get('locked')) && !member.isOwner) return new Response('locked', { status: 423 });
       member.id = crypto.randomUUID().slice(0, 8);
       member.joinedAt = Date.now();
 
@@ -66,7 +67,8 @@ export class ChatRoom {
 
       // send history (ciphertext only) + current roster to the newcomer
       const history = cfg.retain > 0 ? (await this.ctx.storage.get('history')) || [] : [];
-      server.send(JSON.stringify({ t: 'welcome', you: member.id, config: publicConfig(cfg), members: this.members(), history }));
+      const locked = !!(await this.ctx.storage.get('locked'));
+      server.send(JSON.stringify({ t: 'welcome', you: member.id, owner: !!member.isOwner, locked, config: publicConfig(cfg), members: this.members(), history }));
       this.broadcast({ t: 'join', member: publicMember(member, cfg) }, server);
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -140,6 +142,20 @@ export class ChatRoom {
       this.broadcast({ t: 'typing', from: me.id, nick: me.nick }, ws);
     } else if (msg.t === 'seen') {
       this.broadcast({ t: 'seen', from: me.id, id: msg.id }, ws);
+    } else if (msg.t === 'kick' && me.isOwner) {
+      for (const sock of this.ctx.getWebSockets()) {
+        const m = sock.deserializeAttachment() || {};
+        if (m.id === msg.id && !m.isOwner) {
+          try {
+            sock.send(JSON.stringify({ t: 'kicked' }));
+            sock.close(1000, 'kicked');
+          } catch {}
+          this.broadcast({ t: 'leave', id: m.id });
+        }
+      }
+    } else if (msg.t === 'lock' && me.isOwner) {
+      await this.ctx.storage.put('locked', !!msg.on);
+      this.broadcast({ t: 'lock', on: !!msg.on });
     }
   }
 
